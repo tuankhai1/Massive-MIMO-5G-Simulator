@@ -10,6 +10,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import textwrap
 import time
@@ -17,10 +18,39 @@ from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
+import numpy as np
 
 from config import SystemConfig
 from experiments import EXPERIMENTS, run_all
 from plot_results import PLOT_FUNCTIONS, plot_all
+
+
+def _json_default(value):
+    """Serialize NumPy scalars/arrays when writing result metadata."""
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    raise TypeError(f"Cannot serialize {type(value).__name__}")
+
+
+def save_raw_results(results: dict, output_dir: Path) -> None:
+    """Persist arrays and lightweight metadata for reproducible plot/report runs."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for experiment, data in results.items():
+        arrays: dict[str, np.ndarray] = {}
+        metadata: dict[str, object] = {}
+        for key, value in data.items():
+            if isinstance(value, np.ndarray):
+                arrays[key] = value
+            elif np.isscalar(value):
+                arrays[key] = np.asarray(value)
+            else:
+                metadata[key] = value
+        np.savez_compressed(output_dir / f"{experiment}.npz", **arrays)
+        (output_dir / f"{experiment}.json").write_text(
+            json.dumps(metadata, indent=2, default=_json_default), encoding="utf-8"
+        )
 
 
 def build_summary(results: dict, cfg: SystemConfig) -> str:
@@ -37,9 +67,23 @@ def build_summary(results: dict, cfg: SystemConfig) -> str:
 
     if "rate_vs_antennas" in results:
         d = results["rate_vs_antennas"]
-        lines.append("[Rate vs. Antennas]")
-        for n, r in zip(d["antennas"], d["rate"]):
-            lines.append(f"  {n:>4d} antennas -> {r:.3f} bit/s/Hz")
+        lines.append("[Rate vs. Antennas — Array Gain vs. Training Overhead]")
+        has_raw = "raw_rate" in d
+        has_topk = "topk_rate" in d
+        header = "  {:>4s}  {:>8s}".format("Nt", "Exh.")
+        if has_raw:
+            header = "  {:>4s}  {:>8s}  {:>8s}".format("Nt", "Raw", "Exh.")
+        if has_topk:
+            header += "  {:>8s}".format("Top-K")
+        lines.append(header)
+        for i, n in enumerate(d["antennas"]):
+            row = f"  {n:>4d}"
+            if has_raw:
+                row += f"  {d['raw_rate'][i]:>8.3f}"
+            row += f"  {d['rate'][i]:>8.3f}"
+            if has_topk:
+                row += f"  {d['topk_rate'][i]:>8.3f}"
+            lines.append(row)
 
     if "codebook_size" in results:
         d = results["codebook_size"]
@@ -57,7 +101,11 @@ def build_summary(results: dict, cfg: SystemConfig) -> str:
         d = results["beam_selection"]
         lines.append("[Beam Selection]")
         for m in ["exhaustive", "hierarchical", "top_k"]:
-            lines.append(f"  {m:<15s}: rate={d['mean_rates'][m]:.3f}  pilots={d['mean_pilots'][m]:.1f}")
+            agreement = d.get("beam_accuracy", {}).get(m, float("nan"))
+            lines.append(
+                f"  {m:<15s}: rate={d['mean_rates'][m]:.3f}  "
+                f"pilots={d['mean_pilots'][m]:.1f}  agreement={agreement:.1%}"
+            )
 
     if "multiuser" in results:
         d = results["multiuser"]
@@ -73,17 +121,24 @@ def build_summary(results: dict, cfg: SystemConfig) -> str:
 
     if "optimization" in results:
         d = results["optimization"]
-        lines.append("[Optimization]")
+        lines.append("[Optimization — all optimizers use fair_utility objective]")
         lines.append(f"  Equal-power utility:  {float(d['equal_utility']):.4f}")
         lines.append(f"  Grid-search utility:  {float(d['grid_utility']):.4f}")
         lines.append(f"  PSO best fraction:    {float(d['pso_fraction']):.3f}")
         lines.append(f"  GA  best fraction:    {float(d['ga_fraction']):.3f}")
+        if 'greedy_fraction' in d:
+            lines.append(f"  Greedy fraction:      {float(d['greedy_fraction']):.3f}")
 
     if "ml_ablation" in results:
         d = results["ml_ablation"]
         lines.append("[ML Ablation]")
         for method, t1, tk in zip(d["methods"], d["top1_accuracy"], d["topk_accuracy"]):
             lines.append(f"  {method:<12s}: top-1={t1:.1%}  top-{d['k']}={tk:.1%}")
+        if "train_samples" in d and "test_samples" in d:
+            lines.append(
+                f"  Trajectory-disjoint split: train={int(d['train_samples'])}  "
+                f"test={int(d['test_samples'])}"
+            )
 
     lines.append("=" * 68)
     return "\n".join(lines)
@@ -146,6 +201,9 @@ def main() -> None:
     print("Generating plots ...")
     plot_all(results, plot_dir)
     print(f"Plots saved to {plot_dir}/")
+
+    save_raw_results(results, output_base)
+    print(f"Raw results saved to {output_base}/")
 
     # --- Summary ---
     summary = build_summary(results, cfg)

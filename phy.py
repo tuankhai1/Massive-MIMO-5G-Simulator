@@ -30,28 +30,38 @@ def qpsk_demodulate(symbols: np.ndarray) -> np.ndarray:
 
 
 def qam16_modulate(bits: np.ndarray) -> np.ndarray:
-    """Map 4-bit groups to 16-QAM symbols (unit average energy)."""
+    """Map 4-bit groups to Gray-coded 16-QAM symbols (unit average energy).
+
+    Bit mapping per axis (Gray code):
+        b_sign=0 → negative,  b_sign=1 → positive
+        b_amp=0  → outer (±3), b_amp=1  → inner (±1)
+
+    Constellation points: {-3, -1, +1, +3} / sqrt(10) on each axis.
+    """
     n_sym = len(bits) // 4
     bits = bits[: n_sym * 4].reshape(n_sym, 4)
-    real = 2 * bits[:, 0] - 1
-    real = real * (2 * bits[:, 1] - 1 + 2)  # ±1, ±3
-    imag = 2 * bits[:, 2] - 1
-    imag = imag * (2 * bits[:, 3] - 1 + 2)
-    # Correct constellation: {-3,-1,+1,+3} on each axis
-    real_part = (2 * bits[:, 0].astype(float) - 1) * (2 * np.abs(2 * bits[:, 1].astype(float) - 1) + 1)
-    imag_part = (2 * bits[:, 2].astype(float) - 1) * (2 * np.abs(2 * bits[:, 3].astype(float) - 1) + 1)
-    symbols = (real_part + 1j * imag_part) / np.sqrt(10.0)
+    # b0 = sign_I, b1 = amplitude_I, b2 = sign_Q, b3 = amplitude_Q
+    sign_i = 2.0 * bits[:, 0] - 1.0        # 0 → -1, 1 → +1
+    amp_i  = 3.0 - 2.0 * bits[:, 1]        # 0 → 3 (outer), 1 → 1 (inner)
+    sign_q = 2.0 * bits[:, 2] - 1.0
+    amp_q  = 3.0 - 2.0 * bits[:, 3]
+    symbols = (sign_i * amp_i + 1j * sign_q * amp_q) / np.sqrt(10.0)
     return symbols
 
 
 def qam16_demodulate(symbols: np.ndarray) -> np.ndarray:
-    """Hard-decision 16-QAM demodulation."""
+    """Hard-decision Gray-coded 16-QAM demodulation.
+
+    Decision boundaries:
+        sign bit:      Re/Im > 0  → 1
+        amplitude bit:  |Re/Im| < 2 → 1 (inner), else 0 (outer)
+    """
     symbols = symbols * np.sqrt(10.0)
     bits = np.empty(symbols.size * 4, dtype=int)
-    bits[0::4] = symbols.real > 0
-    bits[1::4] = np.abs(symbols.real) > 2
-    bits[2::4] = symbols.imag > 0
-    bits[3::4] = np.abs(symbols.imag) > 2
+    bits[0::4] = (symbols.real > 0).astype(int)
+    bits[1::4] = (np.abs(symbols.real) < 2).astype(int)
+    bits[2::4] = (symbols.imag > 0).astype(int)
+    bits[3::4] = (np.abs(symbols.imag) < 2).astype(int)
     return bits
 
 
@@ -104,6 +114,116 @@ def interpolate_channel(
     return real_interp + 1j * imag_interp
 
 
+def interpolate_channel_dft(
+    pilot_indices: np.ndarray,
+    pilot_estimates: np.ndarray,
+    num_subcarriers: int,
+    channel_taps: int,
+) -> np.ndarray:
+    """Fit a CP-bounded tapped-delay-line channel to pilot estimates.
+
+    Unlike direct linear interpolation, this uses the OFDM channel structure
+    and remains stable at high SNR for a frequency-selective multipath link.
+    """
+    tap_indices = np.arange(min(channel_taps, num_subcarriers))
+    pilot_matrix = np.exp(
+        -2j * np.pi * np.outer(np.asarray(pilot_indices), tap_indices) / num_subcarriers
+    )
+    taps, *_ = np.linalg.lstsq(pilot_matrix, pilot_estimates, rcond=None)
+    all_matrix = np.exp(
+        -2j * np.pi * np.outer(np.arange(num_subcarriers), tap_indices) / num_subcarriers
+    )
+    return all_matrix @ taps
+
+
+def _sample_multipath_channel(
+    rng: np.random.Generator,
+    cp_length: int,
+) -> np.ndarray:
+    """Draw a normalized tapped-delay-line channel contained within the CP."""
+    # Delay spread is deliberately below the pilot-sampling coherence interval
+    # (one pilot every four tones) as well as the cyclic prefix.  Otherwise a
+    # linear pilot interpolator develops an artificial high-SNR error floor.
+    candidate_delays = np.array([0, 1, 2, 3])
+    delays = candidate_delays[candidate_delays <= cp_length]
+    if len(delays) == 0:
+        delays = np.array([0])
+    powers = np.exp(-delays / 2.8)
+    gains = (rng.normal(size=len(delays)) + 1j * rng.normal(size=len(delays)))
+    gains *= np.sqrt(powers / 2.0)
+    gains /= np.linalg.norm(gains) + 1e-12
+    impulse_response = np.zeros(int(delays.max()) + 1, dtype=complex)
+    impulse_response[delays] = gains
+    return impulse_response
+
+
+def _ofdm_link_ber(
+    snr_db_values: np.ndarray,
+    rng: np.random.Generator,
+    *,
+    bits_per_symbol: int,
+    frames: int,
+    subcarriers: int,
+    cp_length: int,
+    pilot_spacing: int,
+    beamforming_antennas: int = 1,
+) -> np.ndarray:
+    """BER for CP-OFDM through a multipath channel with LS pilot equalisation.
+
+    The requested SNR is the average single-antenna receive SNR before array
+    gain.  Setting ``beamforming_antennas`` above one applies ideal matched
+    transmit steering, yielding the expected coherent gain while retaining the
+    *same* multipath channel, pilots, CP and receiver as the no-BF baseline.
+    """
+    if subcarriers <= 0 or cp_length < 0 or pilot_spacing <= 0:
+        raise ValueError("Invalid OFDM dimensions or pilot spacing")
+
+    pilot_indices = np.arange(0, subcarriers, pilot_spacing, dtype=int)
+    data_indices = np.setdiff1d(np.arange(subcarriers), pilot_indices)
+    pilot_symbol = (1.0 + 1.0j) / np.sqrt(2.0)
+    beam_amplitude = np.sqrt(max(beamforming_antennas, 1))
+    ber = []
+
+    for snr_db in snr_db_values:
+        bit_errors = 0
+        total_bits = 0
+        noise_std = np.sqrt(1.0 / (2.0 * 10.0 ** (snr_db / 10.0)))
+
+        for _ in range(frames):
+            bits = rng.integers(0, 2, size=bits_per_symbol * len(data_indices))
+            data_symbols = qpsk_modulate(bits) if bits_per_symbol == 2 else qam16_modulate(bits)
+            frequency_symbols = np.empty(subcarriers, dtype=complex)
+            frequency_symbols[pilot_indices] = pilot_symbol
+            frequency_symbols[data_indices] = data_symbols
+
+            tx_signal = ofdm_transmit(frequency_symbols, subcarriers, cp_length)
+            impulse_response = beam_amplitude * _sample_multipath_channel(rng, cp_length)
+            received = np.convolve(tx_signal, impulse_response, mode="full")[: len(tx_signal)]
+            received += noise_std * (
+                rng.normal(size=len(received)) + 1j * rng.normal(size=len(received))
+            )
+
+            received_frequency = ofdm_receive(received, subcarriers, cp_length)
+            pilot_estimates = channel_estimate_ls(
+                received_frequency[pilot_indices], frequency_symbols[pilot_indices]
+            )
+            channel_estimate = interpolate_channel_dft(
+                pilot_indices, pilot_estimates, subcarriers,
+                channel_taps=len(impulse_response),
+            )
+            equalized_data = received_frequency[data_indices] / np.where(
+                np.abs(channel_estimate[data_indices]) > 1e-8,
+                channel_estimate[data_indices],
+                1e-8,
+            )
+            decoded = qpsk_demodulate(equalized_data) if bits_per_symbol == 2 else qam16_demodulate(equalized_data)
+            bit_errors += np.count_nonzero(bits != decoded)
+            total_bits += len(bits)
+
+        ber.append(bit_errors / max(total_bits, 1))
+    return np.asarray(ber)
+
+
 # ---------------------------------------------------------------------------
 # Standalone OFDM BER (legacy, backward compatible)
 # ---------------------------------------------------------------------------
@@ -113,29 +233,14 @@ def ofdm_qpsk_ber(
     rng: np.random.Generator,
     frames: int = 150,
     subcarriers: int = 64,
+    cp_length: int = 16,
+    pilot_spacing: int = 4,
 ) -> np.ndarray:
-    """QPSK OFDM through flat-per-subcarrier Rayleigh fading with ideal pilots."""
-    ber = []
-    for snr_db in snr_db_values:
-        bit_errors = 0
-        total_bits = 0
-        noise_std = np.sqrt(1.0 / (2.0 * 10 ** (snr_db / 10.0)))
-        for _ in range(frames):
-            bits = rng.integers(0, 2, size=2 * subcarriers)
-            transmitted = qpsk_modulate(bits)
-            channel = (
-                rng.normal(size=subcarriers) + 1j * rng.normal(size=subcarriers)
-            ) / np.sqrt(2.0)
-            noise = noise_std * (
-                rng.normal(size=subcarriers) + 1j * rng.normal(size=subcarriers)
-            )
-            received = channel * transmitted + noise
-            estimated = received / np.where(np.abs(channel) > 1e-8, channel, 1e-8)
-            decoded = qpsk_demodulate(estimated)
-            bit_errors += np.count_nonzero(bits != decoded)
-            total_bits += bits.size
-        ber.append(bit_errors / total_bits)
-    return np.asarray(ber)
+    """QPSK CP-OFDM BER with pilot-aided LS channel estimation."""
+    return _ofdm_link_ber(
+        snr_db_values, rng, bits_per_symbol=2, frames=frames,
+        subcarriers=subcarriers, cp_length=cp_length, pilot_spacing=pilot_spacing,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -151,49 +256,28 @@ def ofdm_ber_with_beamforming(
     cp_length: int = 16,
     pilot_spacing: int = 4,
 ) -> np.ndarray:
-    """OFDM BER where the BS applies a matched-filter beamformer per subcarrier.
+    """QPSK CP-OFDM BER with matched-beam array gain and identical PHY setup."""
+    return _ofdm_link_ber(
+        snr_db_values, rng, bits_per_symbol=2, frames=frames,
+        subcarriers=subcarriers, cp_length=cp_length, pilot_spacing=pilot_spacing,
+        beamforming_antennas=num_antennas,
+    )
 
-    The beamforming gain is the primary difference from the non-BF case.
-    """
-    from array_model import steering_vector  # local import to avoid circular
 
-    ber = []
-    for snr_db in snr_db_values:
-        bit_errors = 0
-        total_bits = 0
-        noise_std = np.sqrt(1.0 / (2.0 * 10 ** (snr_db / 10.0)))
-        for _ in range(frames):
-            # Random dominant AoD for this frame
-            angle = rng.uniform(-np.pi / 3, np.pi / 3)
-            sv = steering_vector(num_antennas, np.sin(angle))
+# ---------------------------------------------------------------------------
+# Standalone 16-QAM OFDM BER
+# ---------------------------------------------------------------------------
 
-            bits = rng.integers(0, 2, size=2 * subcarriers)
-            tx_symbols = qpsk_modulate(bits)
-
-            # Per-subcarrier flat fading channel vector (Nt,) + small spread
-            h_base = sv + 0.2 * (
-                rng.normal(size=num_antennas) + 1j * rng.normal(size=num_antennas)
-            ) / np.sqrt(num_antennas)
-
-            # BF weight = matched filter (ideal CSI)
-            w = h_base / np.linalg.norm(h_base)
-            effective_channel = h_base.conj() @ w  # scalar BF gain
-
-            noise = noise_std * (
-                rng.normal(size=subcarriers) + 1j * rng.normal(size=subcarriers)
-            )
-            received = effective_channel * tx_symbols + noise
-
-            # Pilot-aided LS estimation
-            pilot_idx = np.arange(0, subcarriers, pilot_spacing)
-            pilot_tx = tx_symbols[pilot_idx]
-            pilot_rx = received[pilot_idx]
-            h_est_pilots = channel_estimate_ls(pilot_rx, pilot_tx)
-            h_est = interpolate_channel(pilot_idx, h_est_pilots, subcarriers)
-
-            equalized = received / np.where(np.abs(h_est) > 1e-8, h_est, 1e-8)
-            decoded = qpsk_demodulate(equalized)
-            bit_errors += np.count_nonzero(bits != decoded)
-            total_bits += bits.size
-        ber.append(bit_errors / max(total_bits, 1))
-    return np.asarray(ber)
+def ofdm_16qam_ber(
+    snr_db_values: np.ndarray,
+    rng: np.random.Generator,
+    frames: int = 150,
+    subcarriers: int = 64,
+    cp_length: int = 16,
+    pilot_spacing: int = 4,
+) -> np.ndarray:
+    """16-QAM CP-OFDM BER with the same multipath and LS-estimation model."""
+    return _ofdm_link_ber(
+        snr_db_values, rng, bits_per_symbol=4, frames=frames,
+        subcarriers=subcarriers, cp_length=cp_length, pilot_spacing=pilot_spacing,
+    )

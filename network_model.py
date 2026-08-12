@@ -129,7 +129,7 @@ def multi_user_sinr(
     """
     K = user_channels.shape[0]
     power_per_user = total_power / K
-    effective = user_channels @ precoder  # (K, K)
+    effective = user_channels.conj() @ precoder  # (K, K)
     signal = power_per_user * np.abs(np.diag(effective)) ** 2
     intra_cell = power_per_user * (
         np.sum(np.abs(effective) ** 2, axis=1) - np.abs(np.diag(effective)) ** 2

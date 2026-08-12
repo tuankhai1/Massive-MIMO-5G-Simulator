@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from beamforming import best_beam, top_k_around
+from beamforming import best_beam, effective_rate, top_k_around
 
 
 # ===================================================================
@@ -179,16 +179,55 @@ def run_beam_management(
     spatial_frequencies: np.ndarray,
     snr_function,
     cfg,
+    retraining_period_s: float | np.ndarray | None = None,
+    ml_predictor=None,
 ) -> dict[str, np.ndarray]:
-    """Compare exhaustive, hierarchical, location-aided, and learnt top-K."""
+    """Compare exhaustive, hierarchical, location-aided, and learnt top-K.
+
+    Every method is scored using exactly the beam it selected.  In particular,
+    hierarchical search is never replaced by the exhaustive oracle beam.
+    ``ml_predictor`` may be a pre-trained probabilistic predictor exposing
+    ``predict_top_k``; otherwise a small MLP is trained on the first half of
+    the provided trajectory and used only after that warm-up section.
+    """
+    from ml.beam_predictor import MLPBeamPredictor
+    from ml.data_generator import beam_feature_matrix
+
     rng = np.random.default_rng(cfg.seed + 101)
     num_steps = len(positions)
+    if num_steps != len(channels):
+        raise ValueError("positions and channels must have the same length")
     all_snr = np.vstack([snr_function(ch, codebook, cfg) for ch in channels])
     labels = np.argmax(all_snr, axis=1)
     velocity = np.vstack([np.zeros(2), np.diff(positions, axis=0)])
-    features = np.column_stack([positions, velocity])
     split = max(20, num_steps // 2)
-    predictor = KNNBeamPredictor().fit(features[:split], labels[:split])
+    noisy_positions = positions + rng.normal(0.0, cfg.location_error_std_m, positions.shape)
+    train_previous = labels.copy()
+    train_previous[1:] = labels[:-1]
+
+    if ml_predictor is None:
+        train_features = beam_feature_matrix(
+            noisy_positions[:split], velocity[:split], train_previous[:split],
+            cfg.codebook_beams,
+        )
+        predictor = MLPBeamPredictor(
+            hidden_units=cfg.ml_hidden_units,
+            learning_rate=cfg.ml_learning_rate,
+            epochs=min(cfg.ml_epochs, 120),
+            seed=cfg.seed + 102,
+            num_classes=cfg.codebook_beams,
+        ).fit(train_features, labels[:split])
+        ml_warmup_end = split
+    else:
+        predictor = ml_predictor
+        ml_warmup_end = 0
+
+    if retraining_period_s is None:
+        periods = np.full(num_steps, cfg.frame_s)
+    else:
+        periods = np.broadcast_to(np.asarray(retraining_period_s, dtype=float), (num_steps,))
+        if np.any(periods <= 0.0):
+            raise ValueError("retraining_period_s must be positive")
 
     # Build hierarchical codebooks for this antenna/codebook config
     h_codebooks = hierarchical_codebook(cfg.antennas, num_levels=3)
@@ -198,31 +237,28 @@ def run_beam_management(
     rates = {n: np.empty(num_steps) for n in method_names}
     pilots_used = {n: np.empty(num_steps, dtype=int) for n in method_names}
 
-    prev_beam = 0
+    ml_previous_beam = location_beam(noisy_positions[0], spatial_frequencies)
     for idx in range(num_steps):
         snr_vals = all_snr[idx]
 
         # --- Exhaustive ---
         selected["exhaustive"][idx] = best_beam(snr_vals)
         pilots_used["exhaustive"][idx] = cfg.codebook_beams
-        rates["exhaustive"][idx] = np.log2(1.0 + snr_vals[selected["exhaustive"][idx]]) * (
-            1.0 - cfg.codebook_beams * cfg.pilot_s / cfg.frame_s
+        rates["exhaustive"][idx] = effective_rate(
+            float(snr_vals[selected["exhaustive"][idx]]), cfg.codebook_beams, cfg,
+            float(periods[idx]),
         )
 
         # --- Hierarchical ---
         h_beam, h_pilots = hierarchical_search(channels[idx], h_codebooks)
-        # Map hierarchical beam to closest in the standard codebook
-        h_gains = np.abs(channels[idx].conj() @ codebook) ** 2
-        selected["hierarchical"][idx] = int(np.argmax(h_gains))  # validate against true codebook
-        # But use hierarchical pilot count
-        _, h_total = hierarchical_search(channels[idx], h_codebooks)
-        pilots_used["hierarchical"][idx] = h_total
-        rates["hierarchical"][idx] = np.log2(1.0 + snr_vals[selected["hierarchical"][idx]]) * (
-            1.0 - h_total * cfg.pilot_s / cfg.frame_s
+        selected["hierarchical"][idx] = h_beam
+        pilots_used["hierarchical"][idx] = h_pilots
+        rates["hierarchical"][idx] = effective_rate(
+            float(snr_vals[h_beam]), h_pilots, cfg, float(periods[idx])
         )
 
         # --- Location top-K ---
-        est_pos = positions[idx] + rng.normal(0.0, cfg.location_error_std_m, 2)
+        est_pos = noisy_positions[idx]
         loc_cands = top_k_around(
             location_beam(est_pos, spatial_frequencies),
             cfg.codebook_beams,
@@ -230,28 +266,38 @@ def run_beam_management(
         )
         selected["location_topk"][idx] = best_beam(snr_vals, loc_cands)
         pilots_used["location_topk"][idx] = len(loc_cands)
-        rates["location_topk"][idx] = np.log2(
-            1.0 + snr_vals[selected["location_topk"][idx]]
-        ) * (1.0 - len(loc_cands) * cfg.pilot_s / cfg.frame_s)
+        rates["location_topk"][idx] = effective_rate(
+            float(snr_vals[selected["location_topk"][idx]]), len(loc_cands), cfg,
+            float(periods[idx]),
+        )
 
         # --- ML top-K ---
-        if idx < split:
+        if idx < ml_warmup_end:
             predicted_center = location_beam(est_pos, spatial_frequencies)
+            ml_cands = top_k_around(predicted_center, cfg.codebook_beams, cfg.top_k)
         else:
-            noisy_feat = features[idx].copy()
-            noisy_feat[:2] = est_pos
-            predicted_center = predictor.predict_center(noisy_feat, cfg.codebook_beams)
-        ml_cands = top_k_around(predicted_center, cfg.codebook_beams, cfg.top_k)
+            ml_feature = beam_feature_matrix(
+                est_pos.reshape(1, 2), velocity[idx].reshape(1, 2),
+                np.array([ml_previous_beam]), cfg.codebook_beams,
+            )[0]
+            ml_cands = predictor.predict_top_k(ml_feature, cfg.top_k)
         selected["ml_topk"][idx] = best_beam(snr_vals, ml_cands)
         pilots_used["ml_topk"][idx] = len(ml_cands)
-        rates["ml_topk"][idx] = np.log2(
-            1.0 + snr_vals[selected["ml_topk"][idx]]
-        ) * (1.0 - len(ml_cands) * cfg.pilot_s / cfg.frame_s)
+        rates["ml_topk"][idx] = effective_rate(
+            float(snr_vals[selected["ml_topk"][idx]]), len(ml_cands), cfg,
+            float(periods[idx]),
+        )
+        # In online deployment this becomes the next frame's measured feedback.
+        ml_previous_beam = selected["ml_topk"][idx]
 
     return {
         "labels": labels,
         "train_end": np.array(split),
         "positions": positions,
+        "retraining_period_s": periods,
+        "hierarchical_hit": selected["hierarchical"] == labels,
+        "location_topk_hit": selected["location_topk"] == labels,
+        "ml_topk_hit": selected["ml_topk"] == labels,
         **{f"{m}_beam": selected[m] for m in method_names},
         **{f"{m}_rate": rates[m] for m in method_names},
         **{f"{m}_pilots": pilots_used[m] for m in method_names},

@@ -5,47 +5,50 @@ Carrier: 28.0 GHz   |   BW: 100 MHz   |   Tx: 30 dBm
 Antennas: 32   |   Codebook beams: 32   |   RF chains: 4
 Users: 4   |   Subcarriers: 64   |   Top-K: 3
 --------------------------------------------------------------------
-[Rate vs. Antennas]
-     4 antennas -> 4.932 bit/s/Hz
-     8 antennas -> 4.855 bit/s/Hz
-    16 antennas -> 4.761 bit/s/Hz
-    32 antennas -> 4.619 bit/s/Hz
-    64 antennas -> 4.318 bit/s/Hz
-   128 antennas -> 3.663 bit/s/Hz
+[Rate vs. Antennas — Array Gain vs. Training Overhead]
+    Nt       Raw      Exh.     Top-K
+     4     6.925     6.870     6.884
+     8     7.880     7.754     7.832
+    16     8.860     8.576     8.807
+    32     9.877     9.245     9.818
+    64    10.892     9.498    10.826
+   128    11.863     8.826    11.791
 [Codebook Trade-off]
-    8 beams -> 1.913 bit/s/Hz
-   16 beams -> 3.333 bit/s/Hz
-   32 beams -> 4.724 bit/s/Hz
-   48 beams -> 4.773 bit/s/Hz
-   64 beams -> 4.670 bit/s/Hz
-   96 beams -> 4.371 bit/s/Hz
+    8 beams -> 5.899 bit/s/Hz
+   16 beams -> 7.878 bit/s/Hz
+   32 beams -> 9.351 bit/s/Hz
+   48 beams -> 9.251 bit/s/Hz
+   64 beams -> 8.993 bit/s/Hz
+   96 beams -> 8.377 bit/s/Hz
 [Beamforming Comparison (mean rate)]
-  Analog    : 5.357 bit/s/Hz
-  Hybrid    : 5.397 bit/s/Hz
-  Digital   : 5.874 bit/s/Hz
+  Analog    : 10.309 bit/s/Hz
+  Hybrid    : 10.702 bit/s/Hz
+  Digital   : 10.843 bit/s/Hz
 [Beam Selection]
-  exhaustive     : rate=5.040  pilots=32.0
-  hierarchical   : rate=5.191  pilots=18.0
-  top_k          : rate=5.352  pilots=3.0
+  exhaustive     : rate=9.671  pilots=32.0  agreement=100.0%
+  hierarchical   : rate=9.960  pilots=18.0  agreement=100.0%
+  top_k          : rate=8.318  pilots=3.0  agreement=64.0%
 [Multi-User ZF]
-   2 users -> sum-rate=8.88  fairness=0.978
-   4 users -> sum-rate=13.20  fairness=0.914
-   8 users -> sum-rate=18.55  fairness=0.839
-  12 users -> sum-rate=20.92  fairness=0.807
-  16 users -> sum-rate=23.64  fairness=0.790
+   2 users -> sum-rate=19.01  fairness=0.994
+   4 users -> sum-rate=33.02  fairness=0.978
+   8 users -> sum-rate=53.78  fairness=0.943
+  12 users -> sum-rate=63.68  fairness=0.870
+  16 users -> sum-rate=68.74  fairness=0.774
 [Handover / Mobility]
-      4 km/h -> outage=0.000  HO-fail=0.000
-     11 km/h -> outage=0.019  HO-fail=0.000
-     30 km/h -> outage=0.000  HO-fail=0.000
-     60 km/h -> outage=0.019  HO-fail=0.000
-    120 km/h -> outage=0.019  HO-fail=0.000
-[Optimization]
+      4 km/h -> outage=0.006  HO-fail=0.005
+     11 km/h -> outage=0.007  HO-fail=0.009
+     30 km/h -> outage=0.008  HO-fail=0.018
+     60 km/h -> outage=0.011  HO-fail=0.041
+    120 km/h -> outage=0.018  HO-fail=0.077
+[Optimization — all optimizers use fair_utility objective]
   Equal-power utility:  3.9103
   Grid-search utility:  3.9133
   PSO best fraction:    0.445
   GA  best fraction:    0.445
+  Greedy fraction:      0.444
 [ML Ablation]
-  Location    : top-1=0.0%  top-3=48.0%
-  History     : top-1=49.3%  top-3=49.3%
-  Combined    : top-1=0.0%  top-3=49.3%
+  Location MLP: top-1=18.4%  top-3=48.2%
+  History Markov: top-1=87.5%  top-3=87.5%
+  Fusion MLP  : top-1=73.4%  top-3=79.1%
+  Trajectory-disjoint split: train=3456  test=1128
 ====================================================================

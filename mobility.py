@@ -1,7 +1,8 @@
 """Mobility model and A3-event handover simulation for multi-cell networks.
 
 Provides random-waypoint mobility traces, RSRP computation per cell,
-3GPP-inspired A3 handover triggering, and a full mobility simulation loop.
+3GPP-inspired A3 handover triggering, and a full mobility simulation loop
+with Monte Carlo trials and confidence intervals.
 """
 
 from __future__ import annotations
@@ -9,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 
 from array_model import dft_codebook, steering_vector
-from channel_model import free_space_amplitude, path_loss_db
+from channel_model import path_loss_db
 from config import SystemConfig
 
 
@@ -87,18 +88,25 @@ def compute_rsrp_with_beamforming(
     bs_positions: np.ndarray,
     cfg: SystemConfig,
     rng: np.random.Generator,
+    codebook: np.ndarray | None = None,
 ) -> np.ndarray:
-    """RSRP including beamforming gain from the best DFT beam per cell."""
+    """RSRP including DFT-codebook array gain from each candidate cell.
+
+    This is a reference-signal measurement: each cell can sound its best beam
+    towards the UE.  Interference leakage is accounted for separately in the
+    SINR calculation, because neighbouring cells normally steer to other UEs.
+    """
     num_cells = len(bs_positions)
-    codebook, _ = dft_codebook(cfg.antennas, cfg.codebook_beams)
+    if codebook is None:
+        codebook, _ = dft_codebook(cfg.antennas, cfg.codebook_beams)
     rsrp = np.empty(num_cells)
 
     for i, bs in enumerate(bs_positions):
         rel = position - bs
         d = float(np.linalg.norm(rel))
-        amp = free_space_amplitude(d, cfg)
+        path_gain = 10.0 ** (-path_loss_db(d, cfg.carrier_hz, "uma_los") / 10.0)
         spatial_freq = rel[1] / max(d, 1e-9)
-        h = amp * np.exp(-1j * 2 * np.pi * d / cfg.wavelength_m) * steering_vector(
+        h = np.sqrt(cfg.antennas * path_gain) * steering_vector(
             cfg.antennas, spatial_freq
         )
         bf_gain = np.max(np.abs(h.conj() @ codebook) ** 2)
@@ -148,19 +156,120 @@ def handover_a3_event(
 
 
 # ===================================================================
-# Full mobility + handover simulation
+# Single-trial mobility + handover simulation
+# ===================================================================
+
+def _run_single_trial(
+    speed_mps: float,
+    bs_positions: np.ndarray,
+    cfg: SystemConfig,
+    rng: np.random.Generator,
+    sim_steps: int,
+    ttt_steps: int,
+    dt: float,
+) -> dict[str, float]:
+    """Run one trial of mobility + handover at a given speed.
+
+    Returns per-trial scalar metrics.
+    """
+    positions, _ = generate_mobility_trace(
+        sim_steps, speed_mps, dt,
+        area_bounds=(-20, -20, cfg.isd_m + 20, cfg.isd_m * 0.87 + 20),
+        rng=rng,
+    )
+
+    serving: int | None = None
+    rsrp_buffer: list[np.ndarray] = []
+    sinr_values = []
+    ho_events = 0
+    ho_failures = 0
+
+    # Correlated shadow fading per BS (dB)
+    shadow_db = rng.normal(0, 4.0, size=len(bs_positions))
+    # Blockage is especially important at mmWave.  A short correlated blockage
+    # process makes outage a meaningful mobility metric without assuming that
+    # every neighbouring base station illuminates the UE with a main lobe.
+    blocked = np.zeros(len(bs_positions), dtype=bool)
+    codebook, _ = dft_codebook(cfg.antennas, cfg.codebook_beams)
+
+    for t in range(len(positions)):
+        rsrp = compute_rsrp_with_beamforming(positions[t], bs_positions, cfg, rng, codebook)
+        # Apply shadow fading that decorrelates over time
+        decorr_dist = 50.0  # decorrelation distance in metres
+        step_dist = speed_mps * dt
+        alpha = min(1.0, step_dist / decorr_dist)
+        shadow_db = (1 - alpha) * shadow_db + alpha * rng.normal(0, 4.0, size=len(bs_positions))
+        rsrp = rsrp * 10.0 ** (shadow_db / 10.0)
+        blockage_enter = min(0.02, 0.002 + 0.00025 * speed_mps)
+        blockage_exit = 0.15
+        blocked = np.where(
+            blocked,
+            rng.random(len(bs_positions)) >= blockage_exit,
+            rng.random(len(bs_positions)) < blockage_enter,
+        )
+        rsrp = rsrp * np.where(blocked, 10.0 ** (-25.0 / 10.0), 1.0)
+
+        # A UE performs initial access on the strongest measured reference
+        # signal instead of being artificially pinned to base station zero.
+        if serving is None:
+            serving = int(np.argmax(rsrp))
+
+        rsrp_buffer.append(rsrp)
+        if len(rsrp_buffer) > ttt_steps + 5:
+            rsrp_buffer.pop(0)
+
+        # Check handover
+        rsrp_arr = np.array(rsrp_buffer)
+        triggered, target = handover_a3_event(
+            rsrp_arr, serving, cfg.handover_margin_db, ttt_steps
+        )
+        if triggered:
+            ho_events += 1
+            # Handover failure: too-late HO when user already moved away
+            ho_execution_delay_s = 0.05  # 50 ms HO execution time
+            distance_during_ho = speed_mps * ho_execution_delay_s
+            failure_prob = min(0.8, distance_during_ho / 20.0)
+            if rng.random() < failure_prob:
+                ho_failures += 1
+            else:
+                serving = target
+
+        # SINR: serving signal / (interference + noise)
+        signal = rsrp[serving]
+        # Non-serving cells steer their main lobes towards their scheduled UEs;
+        # this UE sees average sidelobe leakage rather than every interferer's
+        # full main-lobe gain.
+        sidelobe_leakage = 10.0 ** (-18.0 / 10.0)
+        interference = sidelobe_leakage * (np.sum(rsrp) - signal)
+        sinr_linear = signal / (interference + cfg.noise_power_w)
+        sinr_values.append(10.0 * np.log10(max(sinr_linear, 1e-10)))
+
+    sinr_arr = np.array(sinr_values)
+    return {
+        "outage_prob": float(np.mean(sinr_arr < 0)),
+        "ho_count": ho_events,
+        "ho_failure_rate": ho_failures / max(ho_events, 1),
+        "mean_sinr_db": float(np.mean(sinr_arr)),
+    }
+
+
+# ===================================================================
+# Full Monte Carlo mobility + handover simulation
 # ===================================================================
 
 def simulate_mobility(cfg: SystemConfig) -> dict[str, np.ndarray]:
-    """Run a multi-cell mobility simulation with A3 handover.
+    """Run a multi-cell Monte Carlo mobility simulation with A3 handover.
+
+    Runs ``n_trials`` independent trials per speed to produce statistically
+    meaningful metrics with 95 % confidence intervals.
 
     Returns
     -------
     dict with keys:
-        speeds_kmh, outage_prob, ho_count, ho_failure_rate, mean_sinr_db
+        speeds_kmh, outage_prob, ho_count, ho_failure_rate, mean_sinr_db,
+        and *_ci_low / *_ci_high variants for confidence intervals.
     """
-    rng = np.random.default_rng(cfg.seed + 200)
-    dt = cfg.frame_s
+    dt = cfg.mobility_step_s
 
     # Hexagonal-ish BS layout
     bs_positions = np.array([
@@ -170,78 +279,43 @@ def simulate_mobility(cfg: SystemConfig) -> dict[str, np.ndarray]:
     ])
 
     speeds_mps = np.array([1.0, 3.0, 8.3, 16.7, 33.3])  # ~3.6, 11, 30, 60, 120 km/h
+    ttt_steps = max(1, int(round(cfg.handover_ttt_ms / (dt * 1e3))))
+
+    n_trials = cfg.mobility_trials
+    sim_steps = max(1, int(round(cfg.mobility_duration_s / dt)))
+
+    metric_keys = ["outage_prob", "ho_count", "ho_failure_rate", "mean_sinr_db"]
 
     all_results: dict[str, list] = {
         "speeds_kmh": [],
-        "outage_prob": [],
-        "ho_count": [],
-        "ho_failure_rate": [],
-        "mean_sinr_db": [],
     }
-
-    ttt_steps = max(1, int(cfg.handover_ttt_ms / (dt * 1e3)))
-    # Use enough steps so even slow users traverse a meaningful distance
-    sim_steps = 2000
+    for mk in metric_keys:
+        all_results[mk] = []
+        all_results[f"{mk}_ci_low"] = []
+        all_results[f"{mk}_ci_high"] = []
 
     for speed in speeds_mps:
-        positions, _ = generate_mobility_trace(
-            sim_steps, speed, dt,
-            area_bounds=(-20, -20, cfg.isd_m + 20, cfg.isd_m * 0.87 + 20),
-            rng=rng,
-        )
+        trial_metrics = {mk: [] for mk in metric_keys}
 
-        serving = 0
-        rsrp_buffer: list[np.ndarray] = []
-        sinr_values = []
-        ho_events = 0
-        ho_failures = 0
-
-        # Correlated shadow fading per BS (dB) — changes faster at higher speed
-        shadow_db = rng.normal(0, 4.0, size=len(bs_positions))
-
-        for t in range(len(positions)):
-            rsrp = compute_rsrp(positions[t], bs_positions, cfg.carrier_hz, cfg.tx_power_w)
-            # Apply shadow fading that decorrelates over time
-            decorr_dist = 50.0  # decorrelation distance in metres
-            step_dist = speed * dt
-            alpha = min(1.0, step_dist / decorr_dist)
-            shadow_db = (1 - alpha) * shadow_db + alpha * rng.normal(0, 4.0, size=len(bs_positions))
-            rsrp = rsrp * 10.0 ** (shadow_db / 10.0)
-
-            rsrp_buffer.append(rsrp)
-            if len(rsrp_buffer) > ttt_steps + 5:
-                rsrp_buffer.pop(0)
-
-            # Check handover
-            rsrp_arr = np.array(rsrp_buffer)
-            triggered, target = handover_a3_event(
-                rsrp_arr, serving, cfg.handover_margin_db, ttt_steps
+        for trial in range(n_trials):
+            # Each trial gets a unique seed derived from speed + trial index
+            trial_rng = np.random.default_rng(
+                cfg.seed + 200 + int(speed * 100) + trial * 7
             )
-            if triggered:
-                ho_events += 1
-                # Handover failure: too-late HO when user already moved away
-                # Higher speed → more likely the channel changed during HO execution
-                ho_execution_delay_s = 0.05  # 50 ms HO execution time
-                distance_during_ho = speed * ho_execution_delay_s
-                failure_prob = min(0.8, distance_during_ho / 20.0)
-                if rng.random() < failure_prob:
-                    ho_failures += 1
-                else:
-                    serving = target
+            result = _run_single_trial(
+                speed, bs_positions, cfg, trial_rng, sim_steps, ttt_steps, dt,
+            )
+            for mk in metric_keys:
+                trial_metrics[mk].append(result[mk])
 
-            # SINR: serving signal / (interference + noise)
-            signal = rsrp[serving]
-            interference = np.sum(rsrp) - signal
-            sinr_linear = signal / (interference + cfg.noise_power_w)
-            sinr_values.append(10.0 * np.log10(max(sinr_linear, 1e-10)))
-
-        sinr_arr = np.array(sinr_values)
         all_results["speeds_kmh"].append(speed * 3.6)
-        all_results["outage_prob"].append(float(np.mean(sinr_arr < 0)))
-        all_results["ho_count"].append(ho_events)
-        all_results["ho_failure_rate"].append(
-            ho_failures / max(ho_events, 1)
-        )
-        all_results["mean_sinr_db"].append(float(np.mean(sinr_arr)))
+        for mk in metric_keys:
+            values = np.array(trial_metrics[mk])
+            mean = float(np.mean(values))
+            std = float(np.std(values, ddof=1))
+            ci_half = 1.96 * std / np.sqrt(n_trials)
+            all_results[mk].append(mean)
+            all_results[f"{mk}_ci_low"].append(mean - ci_half)
+            all_results[f"{mk}_ci_high"].append(mean + ci_half)
 
     return {k: np.array(v) for k, v in all_results.items()}

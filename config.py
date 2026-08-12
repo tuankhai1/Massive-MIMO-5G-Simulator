@@ -42,6 +42,9 @@ class SystemConfig:
     user_speed_mps: float = 5.0
     handover_margin_db: float = 3.0
     handover_ttt_ms: float = 40.0
+    mobility_step_s: float = 10e-3
+    mobility_duration_s: float = 20.0
+    mobility_trials: int = 30
 
     # ---------- Multi-cell ----------
     num_cells: int = 3
@@ -51,6 +54,12 @@ class SystemConfig:
     ml_train_fraction: float = 0.5
     knn_neighbors: int = 9
     location_error_std_m: float = 8.0
+    ml_hidden_units: int = 64
+    ml_epochs: int = 180
+    ml_learning_rate: float = 0.025
+    ml_train_episodes: int = 72
+    ml_test_episodes: int = 24
+    ml_steps_per_episode: int = 48
 
     # ---------- Simulation ----------
     route_steps: int = 150
@@ -73,3 +82,8 @@ class SystemConfig:
     @property
     def is_upa(self) -> bool:
         return self.upa_rows > 1
+
+    @property
+    def array_gain_linear(self) -> float:
+        """Ideal coherent transmit-array gain for a unit-norm codeword."""
+        return float(self.antennas)

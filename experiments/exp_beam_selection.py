@@ -36,15 +36,13 @@ def run(cfg: SystemConfig) -> dict:
 
         # Hierarchical
         h_beam, h_pilots, _ = hierarchical_beam_search(ch, h_codebooks)
-        # Validate: find closest beam in standard codebook
-        std_gains = np.abs(ch.conj() @ codebook) ** 2
-        h_beam_std = int(np.argmax(std_gains))
-        beams["hierarchical"].append(h_beam_std)
+        beams["hierarchical"].append(h_beam)
         pilots["hierarchical"].append(h_pilots)
-        rates["hierarchical"].append(effective_rate(float(snr[h_beam_std]), h_pilots, cfg))
+        rates["hierarchical"].append(effective_rate(float(snr[h_beam]), h_pilots, cfg))
 
         # Top-K (location-aided)
-        direction = pos[1] / max(np.linalg.norm(pos), 1e-9)
+        estimated_pos = pos + rng.normal(0.0, cfg.location_error_std_m, 2)
+        direction = estimated_pos[1] / max(np.linalg.norm(estimated_pos), 1e-9)
         center = int(np.argmin(np.abs(freqs - direction)))
         cands = top_k_around(center, cfg.codebook_beams, cfg.top_k)
         tk_beam = best_beam(snr, cands)
@@ -59,4 +57,8 @@ def run(cfg: SystemConfig) -> dict:
         **{f"{m}_beam": np.array(beams[m]) for m in methods},
         "mean_rates": {m: float(np.mean(rates[m])) for m in methods},
         "mean_pilots": {m: float(np.mean(pilots[m])) for m in methods},
+        "beam_accuracy": {
+            m: float(np.mean(np.asarray(beams[m]) == np.asarray(beams["exhaustive"])))
+            for m in methods
+        },
     }

@@ -30,9 +30,18 @@ def effective_rate(
     snr_linear: float,
     tested_beams: int,
     cfg: SystemConfig,
+    retraining_period_s: float | None = None,
 ) -> float:
-    """Spectral efficiency after deducting beam-training pilot overhead."""
-    data_fraction = max(0.0, 1.0 - tested_beams * cfg.pilot_s / cfg.frame_s)
+    """Spectral efficiency after deducting beam-training pilot overhead.
+
+    ``retraining_period_s`` is the interval between two beam acquisitions.  It
+    defaults to one frame, while mobility studies can use a beam-coherence
+    interval so that faster users incur more frequent training overhead.
+    """
+    interval = cfg.frame_s if retraining_period_s is None else retraining_period_s
+    if interval <= 0:
+        raise ValueError("retraining_period_s must be positive")
+    data_fraction = max(0.0, 1.0 - tested_beams * cfg.pilot_s / interval)
     return float(data_fraction * np.log2(1.0 + snr_linear))
 
 
@@ -46,8 +55,16 @@ def best_beam(
 
 
 def top_k_around(center: int, total_beams: int, k: int) -> np.ndarray:
-    offsets = np.arange(-(k // 2), k - (k // 2))
-    return np.unique((center + offsets) % total_beams)
+    """Return ``k`` contiguous candidate beams around ``center``.
+
+    The DFT endpoints represent opposite end-fire directions, so wrapping an
+    index from the first beam to the last beam is not a physically local search.
+    """
+    if total_beams <= 0 or k <= 0:
+        raise ValueError("total_beams and k must be positive")
+    k_eff = min(k, total_beams)
+    start = int(np.clip(center - k_eff // 2, 0, total_beams - k_eff))
+    return np.arange(start, start + k_eff, dtype=int)
 
 
 def analog_beamformer(
@@ -106,12 +123,15 @@ def multi_user_zf_precoder(channels: np.ndarray) -> np.ndarray:
     W : (Nt, K) precoding matrix, columns have unit norm.
     """
     K, Nt = channels.shape
-    # Pseudo-inverse: W_raw = H^H (H H^H)^{-1}
-    HHH = channels @ channels.conj().T  # (K, K)
+    # The receive model is y = H^H W s + n.  Work with the equivalent
+    # row-channel H_rx = H^H before forming the Moore-Penrose ZF precoder.
+    H_rx = channels.conj()
+    gram = H_rx @ H_rx.conj().T
+    regularization = 1e-10 * max(float(np.trace(gram).real) / max(K, 1), 1e-30)
     try:
-        W_raw = channels.conj().T @ np.linalg.inv(HHH + 1e-10 * np.eye(K))
+        W_raw = H_rx.conj().T @ np.linalg.inv(gram + regularization * np.eye(K))
     except np.linalg.LinAlgError:
-        W_raw = channels.conj().T @ np.linalg.pinv(HHH)
+        W_raw = H_rx.conj().T @ np.linalg.pinv(gram)
     # Normalize columns
     norms = np.linalg.norm(W_raw, axis=0, keepdims=True)
     return W_raw / (norms + 1e-12)
@@ -138,7 +158,7 @@ def compute_sinr(
     """
     K = channels.shape[0]
     power_per_user = total_power / K
-    effective = channels @ precoder  # (K, K)
+    effective = channels.conj() @ precoder  # (K, K)
     signal = power_per_user * np.abs(np.diag(effective)) ** 2
     interference = power_per_user * (
         np.sum(np.abs(effective) ** 2, axis=1) - np.abs(np.diag(effective)) ** 2
@@ -191,12 +211,16 @@ def hybrid_beamformer(
     selected = []
 
     for _ in range(num_rf_chains):
-        projections = np.abs(residual.conj() @ codebook)
+        available = np.setdiff1d(np.arange(codebook.shape[1]), selected, assume_unique=True)
+        if available.size == 0:
+            break
+        projections = np.abs(codebook[:, available].conj().T @ residual)
         idx = int(np.argmax(projections))
-        selected.append(idx)
-        # Project out the selected beam's contribution
-        beam = codebook[:, idx]
-        residual = residual - (residual.conj() @ beam) * beam
+        selected.append(int(available[idx]))
+        # Orthogonal matching pursuit residual after refitting all selected atoms.
+        F_selected = codebook[:, selected]
+        coefficients, *_ = np.linalg.lstsq(F_selected, channel, rcond=None)
+        residual = channel - F_selected @ coefficients
 
     F_RF = codebook[:, selected]  # (Nt, Nrf)
 

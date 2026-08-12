@@ -182,7 +182,7 @@ def narrowband_channel(
     gains = apply_doppler(cr, time_s)
     h = np.zeros(num_antennas, dtype=complex)
     for g, aod in zip(gains, cr.aod):
-        h += g * steering_vector(num_antennas, np.sin(aod))
+        h += np.sqrt(num_antennas) * g * steering_vector(num_antennas, np.sin(aod))
     return h
 
 
@@ -211,7 +211,7 @@ def wideband_channel_matrix(
     for g, aod, tau in zip(gains, cr.aod, cr.delays):
         sv = steering_vector(num_antennas, np.sin(aod))
         freq_response = np.exp(-1j * 2 * np.pi * k * subcarrier_spacing * tau)
-        H += g * np.outer(freq_response, sv)
+        H += np.sqrt(num_antennas) * g * np.outer(freq_response, sv)
     return H
 
 
@@ -235,7 +235,8 @@ def geometric_channel(
     spatial_frequency = relative[1] / max(distance, 1e-9)
     phase = np.exp(-1j * 2.0 * np.pi * distance / cfg.wavelength_m)
     channel = (
-        free_space_amplitude(distance, cfg)
+        np.sqrt(cfg.antennas)
+        * free_space_amplitude(distance, cfg)
         * phase
         * steering_vector(cfg.antennas, spatial_frequency)
     )
@@ -249,7 +250,8 @@ def geometric_channel(
         departure = (reflector - base_station)[1] / max(first_leg, 1e-9)
         random_phase = np.exp(1j * rng.uniform(0.0, 2.0 * np.pi))
         channel += (
-            loss
+            np.sqrt(cfg.antennas)
+            * loss
             * free_space_amplitude(total, cfg)
             * random_phase
             * np.exp(-1j * 2.0 * np.pi * total / cfg.wavelength_m)

@@ -8,6 +8,8 @@ Three predictors with a common interface:
 * LocationOnlyPredictor — uses only (noisy) x, y.
 * HistoryOnlyPredictor — uses only previous beam index (Markov chain).
 * CombinedPredictor — uses (noisy) x, y, vx, vy, prev_beam.
+* MLPBeamPredictor — a regularised softmax multi-layer perceptron implemented
+  in NumPy for non-linear, probabilistic top-K beam prediction.
 """
 
 from __future__ import annotations
@@ -133,3 +135,140 @@ class CombinedPredictor:
         q = (feature - self._mean) / self._std
         votes = _knn_predict(self._features, self._labels, q, self.neighbors, self.num_classes)
         return np.argsort(votes)[-k:][::-1]
+
+
+# ===================================================================
+# Regularised MLP classifier
+# ===================================================================
+
+@dataclass
+class MLPBeamPredictor:
+    """Small NumPy MLP for non-linear beam classification and top-K ranking.
+
+    The predictor uses two ReLU layers and a softmax output.  It is purposely
+    compact enough to keep the project dependency-free while providing a much
+    stronger baseline than hard KNN voting for noisy location and mobility
+    features.
+    """
+
+    hidden_units: int = 64
+    learning_rate: float = 0.025
+    epochs: int = 180
+    batch_size: int = 128
+    l2: float = 1e-4
+    seed: int = 0
+    num_classes: int = 32
+    _mean: np.ndarray | None = field(default=None, repr=False)
+    _std: np.ndarray | None = field(default=None, repr=False)
+    _weights: tuple[np.ndarray, ...] | None = field(
+        default=None, repr=False
+    )
+    loss_history: np.ndarray | None = field(default=None, repr=False)
+
+    @staticmethod
+    def _softmax(logits: np.ndarray) -> np.ndarray:
+        shifted = logits - np.max(logits, axis=1, keepdims=True)
+        exp_logits = np.exp(shifted)
+        return exp_logits / np.sum(exp_logits, axis=1, keepdims=True)
+
+    def fit(self, features: np.ndarray, labels: np.ndarray) -> "MLPBeamPredictor":
+        features = np.asarray(features, dtype=float)
+        labels = np.asarray(labels, dtype=int)
+        if features.ndim != 2 or labels.ndim != 1 or len(features) != len(labels):
+            raise ValueError("features must be (N, D) and labels must be (N,)")
+        if len(labels) == 0:
+            raise ValueError("Cannot fit MLPBeamPredictor with no samples")
+
+        self.num_classes = max(self.num_classes, int(labels.max()) + 1)
+        self._mean = features.mean(axis=0)
+        self._std = np.maximum(features.std(axis=0), 1e-6)
+        x = (features - self._mean) / self._std
+        n_samples, n_features = x.shape
+        rng = np.random.default_rng(self.seed)
+
+        # Xavier initialisation for the two hidden layers and the output head.
+        scale1 = np.sqrt(2.0 / (n_features + self.hidden_units))
+        scale2 = np.sqrt(2.0 / (2 * self.hidden_units))
+        scale3 = np.sqrt(2.0 / (self.hidden_units + self.num_classes))
+        W1 = rng.normal(0.0, scale1, size=(n_features, self.hidden_units))
+        b1 = np.zeros(self.hidden_units)
+        W2 = rng.normal(0.0, scale2, size=(self.hidden_units, self.hidden_units))
+        b2 = np.zeros(self.hidden_units)
+        W3 = rng.normal(0.0, scale3, size=(self.hidden_units, self.num_classes))
+        b3 = np.zeros(self.num_classes)
+
+        # Adam optimiser state.
+        parameters = [W1, b1, W2, b2, W3, b3]
+        first_moment = [np.zeros_like(p) for p in parameters]
+        second_moment = [np.zeros_like(p) for p in parameters]
+        beta1, beta2 = 0.9, 0.999
+        step = 0
+        losses = []
+
+        for _ in range(self.epochs):
+            batches = np.array_split(
+                rng.permutation(n_samples),
+                max(1, int(np.ceil(n_samples / self.batch_size))),
+            )
+            for batch_indices in batches:
+                xb = x[batch_indices]
+                yb = labels[batch_indices]
+
+                z1 = xb @ W1 + b1
+                h1 = np.maximum(z1, 0.0)
+                z2 = h1 @ W2 + b2
+                h2 = np.maximum(z2, 0.0)
+                probabilities = self._softmax(h2 @ W3 + b3)
+
+                target = np.zeros_like(probabilities)
+                target[np.arange(len(yb)), yb] = 1.0
+                grad_logits = (probabilities - target) / len(yb)
+                grad_W3 = h2.T @ grad_logits + self.l2 * W3
+                grad_b3 = grad_logits.sum(axis=0)
+                grad_h2 = grad_logits @ W3.T
+                grad_z2 = grad_h2 * (z2 > 0.0)
+                grad_W2 = h1.T @ grad_z2 + self.l2 * W2
+                grad_b2 = grad_z2.sum(axis=0)
+                grad_h1 = grad_z2 @ W2.T
+                grad_z1 = grad_h1 * (z1 > 0.0)
+                grad_W1 = xb.T @ grad_z1 + self.l2 * W1
+                grad_b1 = grad_z1.sum(axis=0)
+
+                gradients = [grad_W1, grad_b1, grad_W2, grad_b2, grad_W3, grad_b3]
+                step += 1
+                for index, (parameter, gradient) in enumerate(zip(parameters, gradients)):
+                    first_moment[index] = beta1 * first_moment[index] + (1.0 - beta1) * gradient
+                    second_moment[index] = beta2 * second_moment[index] + (1.0 - beta2) * gradient**2
+                    m_hat = first_moment[index] / (1.0 - beta1**step)
+                    v_hat = second_moment[index] / (1.0 - beta2**step)
+                    parameter -= self.learning_rate * m_hat / (np.sqrt(v_hat) + 1e-8)
+
+            full_probabilities = self._softmax(
+                np.maximum(np.maximum(x @ W1 + b1, 0.0) @ W2 + b2, 0.0) @ W3 + b3
+            )
+            losses.append(float(-np.mean(np.log(full_probabilities[np.arange(n_samples), labels] + 1e-12))))
+
+        self._weights = (W1, b1, W2, b2, W3, b3)
+        self.loss_history = np.asarray(losses)
+        return self
+
+    def predict_proba(self, features: np.ndarray) -> np.ndarray:
+        if self._weights is None or self._mean is None or self._std is None:
+            raise RuntimeError("Fit before predicting.")
+        x = np.asarray(features, dtype=float)
+        was_vector = x.ndim == 1
+        x = np.atleast_2d(x)
+        x = (x - self._mean) / self._std
+        W1, b1, W2, b2, W3, b3 = self._weights
+        h1 = np.maximum(x @ W1 + b1, 0.0)
+        h2 = np.maximum(h1 @ W2 + b2, 0.0)
+        probabilities = self._softmax(h2 @ W3 + b3)
+        return probabilities[0] if was_vector else probabilities
+
+    def predict(self, feature: np.ndarray) -> int:
+        return int(np.argmax(self.predict_proba(feature)))
+
+    def predict_top_k(self, feature: np.ndarray, k: int) -> np.ndarray:
+        probabilities = self.predict_proba(feature)
+        k_eff = min(k, len(probabilities))
+        return np.argsort(probabilities)[-k_eff:][::-1]

@@ -78,3 +78,53 @@ def greedy_power_allocation(
         history.append(rate)
 
     return powers, np.array(history)
+
+
+def greedy_fair_power_allocation(
+    gains: np.ndarray,
+    total_power: float,
+    noise: float,
+    steps: int = 50,
+) -> tuple[float, np.ndarray]:
+    """Greedy power allocation optimising proportional-fair (log-sum-rate) utility.
+
+    Unlike :func:`greedy_power_allocation` which maximises sum-rate,
+    this function maximises ``fair_utility`` — the same objective used
+    by PSO and GA — so that all optimizers can be compared on the same
+    objective.
+
+    Designed for the two-user power-fraction problem: at each step try
+    shifting the fraction by ±delta and keep the direction that improves
+    the fair utility.
+
+    Returns
+    -------
+    best_fraction : float
+        Final power fraction for user 0.
+    history : (steps,) array
+        Fair-utility value at each step.
+    """
+    from algorithms.power_allocation import fair_utility
+
+    fraction = 0.5  # start at equal power
+    delta = 0.4 / steps  # step size shrinks with resolution
+    history = []
+
+    for i in range(steps):
+        current = fair_utility(fraction, gains, total_power, noise)
+        # Try both directions
+        f_up = min(0.98, fraction + delta)
+        f_down = max(0.02, fraction - delta)
+        u_up = fair_utility(f_up, gains, total_power, noise)
+        u_down = fair_utility(f_down, gains, total_power, noise)
+
+        if u_up > current and u_up >= u_down:
+            fraction = f_up
+            history.append(u_up)
+        elif u_down > current:
+            fraction = f_down
+            history.append(u_down)
+        else:
+            history.append(current)
+
+    return fraction, np.array(history)

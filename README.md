@@ -28,7 +28,7 @@
 
 ## Overview
 
-A **modular, reproducible Python simulator** that covers the full physical-layer-to-network-layer pipeline of a 5G millimeter-wave (mmWave) massive-MIMO system. The simulator spans radio propagation, OFDM transceiver design, analog/hybrid/digital beamforming, codebook-based beam management, multi-user MIMO precoding, mobility-aware handover, power-allocation optimization, and ML-assisted beam prediction — all implemented in pure **NumPy + Matplotlib** with no deep-learning dependencies.
+A **modular, reproducible Python simulator** for a 5G-inspired millimeter-wave (mmWave) massive-MIMO link and network. It includes propagation, CP-OFDM, analog/hybrid/digital beamforming, codebook-based beam management, multi-user zero-forcing, mobility-aware handover, power allocation, and ML-assisted beam prediction. The implementation uses **NumPy + Matplotlib** only; the non-linear MLP is implemented directly in NumPy, so no external deep-learning framework is required.
 
 The project ships **12 self-contained experiments**, each generating publication-ready plots and quantitative summaries, enabling rapid prototyping and benchmarking of beamforming and beam management strategies under realistic 5G-inspired conditions.
 
@@ -42,6 +42,7 @@ The project ships **12 self-contained experiments**, each generating publication
 | OFDM subcarriers | 64 | Cyclic prefix | 16 |
 | RF chains | 4 | Streams / user | 1 |
 | Users | 4 | Cells | 3 |
+| Mobility sampling | 10 ms | Handover trials | 30 |
 
 ---
 
@@ -53,7 +54,7 @@ Millimeter-wave (mmWave) communication at 28 GHz and above is a cornerstone of 5
 2. **Which beamforming architecture to use?** Analog, digital, and hybrid architectures trade off hardware cost against achievable rate.
 3. **How does mobility affect beam alignment?** Fast-moving users cause frequent beam misalignment and handover failures.
 4. **Can machine learning reduce beam-search overhead?** Location-aware and history-aware predictors can narrow the search space.
-5. **How to allocate power fairly across users?** Metaheuristic optimizers (PSO, GA) can outperform naïve equal-power allocation.
+5. **How to allocate power fairly across users?** Metaheuristic optimizers (PSO, GA) can outperform naive equal-power allocation.
 
 ### Project Aims
 
@@ -109,7 +110,7 @@ The simulator is organized as a layered pipeline, where each layer feeds into th
 │  • Exhaustive sweep (full codebook)                             │
 │  • Hierarchical multi-resolution search                         │
 │  • Location-aided top-K refinement                              │
-│  • ML-assisted beam prediction (KNN, Markov chain)              │
+│  • ML-assisted beam prediction (MLP, Markov baseline)           │
 │  • Adjacent-beam tracking                                       │
 └──────────────────────────┬──────────────────────────────────────┘
                            │
@@ -130,7 +131,7 @@ The simulator is organized as a layered pipeline, where each layer feeds into th
 │  • Particle Swarm Optimization (PSO)                            │
 │  • Genetic Algorithm (GA) with tournament selection             │
 │  • Greedy marginal-rate power allocation                        │
-│  • KNN beam predictors: Location / History / Combined           │
+│  • NumPy MLP and Markov beam predictors                          │
 └──────────────────────────┬──────────────────────────────────────┘
                            │
                            ▼
@@ -160,7 +161,7 @@ mimo-beamforming-beam-management/
 ├── beamforming.py                  # Beamforming: analog (codebook), digital (MRT/ZF),
 │                                   #   hybrid (alternating minimisation), MU-MIMO ZF
 ├── beam_management.py              # Beam management: exhaustive, hierarchical search,
-│                                   #   location-aided, KNN ML-based, beam tracking
+│                                   #   location-aided, MLP top-K, beam tracking
 ├── mobility.py                     # Mobility: random-walk traces, RSRP, A3 handover,
 │                                   #   multi-speed simulation loop
 ├── network_model.py                # Network: multi-cell layout, scheduling (RR, PF),
@@ -178,7 +179,7 @@ mimo-beamforming-beam-management/
 ├── ml/                             # Machine learning beam prediction
 │   ├── __init__.py
 │   ├── data_generator.py           #   Supervised beam dataset from user route
-│   └── beam_predictor.py           #   3 KNN predictors: Location / History / Combined
+│   └── beam_predictor.py           #   KNN baselines + regularized NumPy MLP
 ├── experiments/                    # 12 self-contained experiments
 │   ├── __init__.py                 #   EXPERIMENTS registry + run_all()
 │   ├── exp_beam_patterns.py        #   (1) Beam patterns vs. ULA size
@@ -257,7 +258,7 @@ pip install -r requirements.txt
 ### Usage
 
 ```bash
-# Run ALL 12 experiments (takes ~30–60 seconds)
+# Run all 12 experiments (typically under one minute on a laptop)
 python main.py
 
 # List available experiments
@@ -270,6 +271,9 @@ python main.py -e ml_ablation
 
 # Override random seed for reproducibility studies
 python main.py --seed 42
+
+# Run the automated regression tests (does not write pytest cache files)
+python -m pytest -q -p no:cacheprovider
 ```
 
 All outputs are saved automatically:
@@ -278,7 +282,7 @@ All outputs are saved automatically:
 | --- | --- |
 | `plots/` | 12 publication-ready PNG figures |
 | `report/` | `summary.txt` — console-friendly results summary |
-| `outputs/` | Raw experiment data (if applicable) |
+| `outputs/` | Per-experiment `.npz` arrays and `.json` metadata |
 
 ---
 
@@ -345,13 +349,13 @@ Below are the key findings from each experiment, using the default system config
   <img src="plots/ofdm_ber.png" width="65%" alt="BER vs. SNR with and without beamforming">
 </p>
 
-**What it shows:** Bit Error Rate (BER) for a QPSK-OFDM link with and without multi-antenna beamforming, using pilot-aided LS channel estimation.
+**What it shows:** BER for a CP-OFDM link through a CP-bounded multipath tapped-delay-line channel. Pilots occupy dedicated subcarriers, the receiver estimates the channel with a DFT-domain LS fit, and the QPSK no-BF and matched-BF cases use the same channel and receiver assumptions. A 16-QAM no-BF reference is also shown.
 
 **Key observations:**
 
-- Beamforming provides a **~7–10 dB SNR gain** at BER = 10⁻², reducing BER by over an order of magnitude at the same SNR operating point.
-- At 14 dB SNR, the BF link achieves BER ≈ 10⁻⁴ while the non-BF link is still at ~3×10⁻².
-- The coherent array gain from matched-filter beamforming effectively improves the link budget, allowing either longer range or higher modulation orders.
+- Matched beamforming shifts the QPSK curve strongly left: at 14 dB pre-beamforming SNR the simulated BF BER is about 3×10⁻⁴, while the single-antenna link remains near 2×10⁻².
+- The 16-QAM curve makes the modulation-order trade-off explicit rather than conflating it with a different channel model.
+- This remains an ideal-CSI transmit-steering benchmark; codebook quantisation, RF impairments and pilot contamination are suitable next extensions.
 
 ---
 
@@ -361,21 +365,21 @@ Below are the key findings from each experiment, using the default system config
   <img src="plots/rate_vs_antennas.png" width="65%" alt="Effective rate and peak SNR vs. antenna count">
 </p>
 
-**What it shows:** Mean effective spectral efficiency and peak post-beamforming SNR as the ULA scales from 4 to 128 elements.
+**What it shows:** Raw rate, exhaustive-sweep effective rate, location top-K effective rate, and peak post-beamforming SNR as the ULA scales from 4 to 128 elements.
 
 **Key observations:**
 
 - Peak SNR increases with array size due to coherent combining gain (~3 dB per doubling).
 - However, **effective rate can decrease** for very large arrays because the exhaustive beam sweep requires testing more beams, consuming more pilot overhead within the frame. This highlights the overhead–performance trade-off at the heart of beam management.
 
-| Antennas | Effective Rate (bit/s/Hz) |
-| :---: | :---: |
-| 4 | 4.93 |
-| 8 | 4.86 |
-| 16 | 4.76 |
-| 32 | 4.62 |
-| 64 | 4.32 |
-| 128 | 3.66 |
+| Antennas | Raw Rate | Exhaustive | Location Top-K |
+| :---: | :---: | :---: | :---: |
+| 4 | 6.93 | 6.87 | 6.88 |
+| 8 | 7.88 | 7.75 | 7.83 |
+| 16 | 8.86 | 8.58 | 8.81 |
+| 32 | 9.88 | 9.24 | 9.82 |
+| 64 | 10.89 | 9.50 | 10.83 |
+| 128 | 11.86 | 8.83 | 11.79 |
 
 ---
 
@@ -401,13 +405,13 @@ Below are the key findings from each experiment, using the default system config
   <img src="plots/overhead_vs_speed.png" width="65%" alt="Rate vs. user speed for different beam management strategies">
 </p>
 
-**What it shows:** Mean effective rate for four beam management strategies (exhaustive, hierarchical, location top-K, ML top-K) across user speeds from pedestrian to vehicular.
+**What it shows:** Mean effective rate for exhaustive, hierarchical, location top-K, and Fusion-MLP top-K selection across user speeds. The training cost is repeated once per Jakes Doppler coherence interval, so speed directly changes the pilot budget.
 
 **Key observations:**
 
-- **Top-K methods** (both location-aided and ML-assisted) consistently outperform exhaustive sweep because they test only ~3 beams per frame versus 32, freeing >90% of the frame for data.
-- Hierarchical search is a good middle ground, using ~18 measurements to achieve near-exhaustive beam quality.
-- At higher speeds, all methods see some rate degradation due to Doppler-induced channel aging and more frequent beam switches.
+- Exhaustive sweeping degrades sharply at higher speed because a 32-pilot sweep must be repeated within a much shorter coherence time.
+- Hierarchical search is a robust middle ground: it needs 18 measurements but avoids the full-sweep Doppler penalty.
+- The Fusion-MLP top-K model maintains the highest effective rate in this scenario by predicting three candidates from noisy location, velocity and prior beam feedback. Location-only top-K is intentionally shown as a weaker, localisation-limited baseline.
 
 ---
 
@@ -417,19 +421,19 @@ Below are the key findings from each experiment, using the default system config
   <img src="plots/beam_selection.png" width="85%" alt="Rate and pilot overhead comparison for beam selection methods">
 </p>
 
-**What it shows:** Side-by-side comparison of mean effective rate and pilot overhead for exhaustive, hierarchical, and top-K beam selection.
+**What it shows:** Side-by-side comparison of mean effective rate, pilot measurements and selected-beam agreement with exhaustive search. Each method is evaluated with the beam it actually selected; no method receives an exhaustive-search oracle beam.
 
 **Key observations:**
 
-- Top-K achieves the **highest effective rate (5.35 bit/s/Hz)** despite testing only 3 beams, because the pilot overhead saving dominates.
-- Exhaustive uses 32 pilot measurements but only achieves 5.04 bit/s/Hz due to the 6.4% frame overhead.
-- Hierarchical search (18 pilots) is close to exhaustive in beam quality but saves ~44% of the pilot budget.
+- Hierarchical search selects the same beam as exhaustive in this high-SNR geometric route while using 18 instead of 32 pilots. This is a result of the selected codebook/channel scenario, not an oracle substitution.
+- Location top-K needs only three pilots but sees a 36% beam-selection miss rate under 8 m location error; its lower rate quantifies the cost of imperfect localisation.
+- The third panel makes this trade-off visible rather than implying that lower pilot cost always improves throughput.
 
-| Method | Mean Rate (bit/s/Hz) | Mean Pilots |
-| :---: | :---: | :---: |
-| Exhaustive | 5.04 | 32 |
-| Hierarchical | 5.19 | 18 |
-| Top-K | 5.35 | 3 |
+| Method | Mean Rate (bit/s/Hz) | Mean Pilots | Beam Agreement |
+| :---: | :---: | :---: | :---: |
+| Exhaustive | 9.67 | 32 | 100% |
+| Hierarchical | 9.96 | 18 | 100% |
+| Location Top-K | 8.32 | 3 | 64% |
 
 ---
 
@@ -443,16 +447,16 @@ Below are the key findings from each experiment, using the default system config
 
 **Key observations:**
 
-- **Digital beamforming** (full MRT) achieves the highest rate (5.87 bit/s/Hz mean) by exploiting full-dimensional channel knowledge.
-- **Hybrid beamforming** (4 RF chains + analog codebook) closely tracks digital performance (5.40 bit/s/Hz), achieving ~92% of the digital rate with far fewer RF chains.
-- **Analog beamforming** (single best codebook beam) is the simplest but lowest-performing (5.36 bit/s/Hz), limited to a single spatial direction.
+- **Digital beamforming** (full MRT) achieves the highest rate (10.84 bit/s/Hz mean) by exploiting full-dimensional channel knowledge.
+- **Hybrid beamforming** (four RF chains plus analog codebook) reaches 10.70 bit/s/Hz, or about 99% of the digital rate in this sparse single-user channel.
+- **Analog beamforming** is simplest but lower-performing (10.31 bit/s/Hz), limited to a single codeword.
 - The gap between architectures widens slightly with more antennas, where digital beamforming can exploit additional spatial degrees of freedom.
 
 | Architecture | Mean Rate (bit/s/Hz) |
 | :---: | :---: |
-| Analog | 5.36 |
-| Hybrid | 5.40 |
-| Digital | 5.87 |
+| Analog | 10.31 |
+| Hybrid | 10.70 |
+| Digital | 10.84 |
 
 ---
 
@@ -466,17 +470,17 @@ Below are the key findings from each experiment, using the default system config
 
 **Key observations:**
 
-- **Sum rate scales nearly linearly** with user count — from 8.9 (2 users) to 23.6 bit/s/Hz (16 users), demonstrating the spatial multiplexing gain of MU-MIMO.
-- **Per-user rate decreases** as the power budget is split across more users (4.4 → 1.5 bit/s/Hz).
+- **Sum rate scales with multiplexing order** — from 19.0 (2 users) to 68.7 bit/s/Hz (16 users) — after fixing the ZF channel convention and scale-aware regularisation.
+- **Per-user rate decreases** as the power budget is split across more users (9.5 to 4.3 bit/s/Hz).
 - **Jain's fairness index** degrades from 0.98 (near-perfect fairness with 2 users) to 0.79 with 16 users, reflecting increasing variance in channel conditions across users.
 
 | Users | Sum Rate | Per-User Rate | Jain Fairness |
 | :---: | :---: | :---: | :---: |
-| 2 | 8.88 | 4.44 | 0.978 |
-| 4 | 13.20 | 3.30 | 0.914 |
-| 8 | 18.55 | 2.32 | 0.839 |
-| 12 | 20.92 | 1.74 | 0.807 |
-| 16 | 23.64 | 1.48 | 0.790 |
+| 2 | 19.01 | 9.50 | 0.994 |
+| 4 | 33.02 | 8.25 | 0.978 |
+| 8 | 53.78 | 6.72 | 0.943 |
+| 12 | 63.68 | 5.31 | 0.870 |
+| 16 | 68.74 | 4.30 | 0.774 |
 
 ---
 
@@ -486,13 +490,13 @@ Below are the key findings from each experiment, using the default system config
   <img src="plots/handover.png" width="95%" alt="Outage, handover failure, and mean SINR vs. speed">
 </p>
 
-**What it shows:** Multi-cell mobility simulation with 3GPP A3-event handover across 5 user speeds (4–120 km/h).
+**What it shows:** Multi-cell mobility simulation with strongest-cell initial access, A3-event handover, correlated shadowing, correlated 25 dB mmWave blockage, realistic sidelobe interference leakage, and 30 Monte Carlo trials per speed.
 
 **Key observations:**
 
-- **Outage probability remains below 2%** across all speeds, showing robust A3-event triggering with the 3 dB hysteresis margin and 40 ms time-to-trigger.
-- **Handover failure rate stays at 0%** in this configuration, as the simplified model handles the mobility range gracefully.
-- **Mean SINR decreases** from ~8.5 dB at pedestrian speed to ~3.6 dB at 120 km/h due to faster shadow fading decorrelation and reduced coherence time.
+- Outage rises from about 0.6% at 4 km/h to 1.8% at 120 km/h. Confidence intervals are plotted and probability intervals are clipped to the valid [0, 1] range.
+- Handover failure is non-zero and increases from about 0.5% to 7.7%, reflecting the configured execution-delay model rather than an artificially perfect handover.
+- The interference model applies sidelobe leakage to non-serving cells; treating every neighbouring base station as an aligned main-lobe interferer is unnecessarily pessimistic for a scheduled mmWave network.
 - The 3-cell hexagonal layout with 200 m inter-site distance provides adequate overlap for seamless mobility.
 
 ---
@@ -526,20 +530,20 @@ Below are the key findings from each experiment, using the default system config
   <img src="plots/ml_ablation.png" width="75%" alt="ML ablation: beam prediction accuracy by feature set">
 </p>
 
-**What it shows:** Top-1 and top-3 beam prediction accuracy for three KNN-based predictors using different feature sets, evaluated on the second half of a 150-step user route.
+**What it shows:** Top-1 and top-3 beam prediction accuracy for a location-only NumPy MLP, a Markov history baseline, and a fusion NumPy MLP. Training and test data are independent trajectories; the first sample of each test trajectory is excluded because it has no prior measured beam.
 
 **Key observations:**
 
-- **History-only (Markov chain)** achieves the best top-1 accuracy at 49.3%, leveraging temporal coherence in beam transitions. This is expected for moderate-speed mobility where beams change gradually.
-- **Location-only** predictor struggles with top-1 (0%) due to 8 m localization noise, but reaches 48% top-3 accuracy — suggesting the position signal is informative but too noisy for precise single-beam prediction with a small training set.
-- **Combined** (location + velocity + history) achieves 0% top-1 but 49.3% top-3, indicating the KNN model benefits from beam-history features but the additional position/velocity features are diluted by noise in this small dataset regime.
-- These results highlight that **history/temporal features are most valuable** when localization is imprecise, and suggest that deeper models (e.g., LSTM, Transformer) could better exploit the combined feature space.
+- The **Markov history baseline** achieves 87.5% top-1 because a previously measured beam is highly informative over a 1 ms update interval.
+- The **Fusion MLP** attains 73.4% top-1 and 79.1% top-3 using noisy location, velocity and one-hot beam feedback. It is the model used in the mobility-overhead comparison.
+- Location-only MLP reaches 18.4% top-1 and 48.2% top-3 under 8 m localisation error. This makes the benefit of temporal feedback explicit rather than hiding it through an oracle feature.
+- Future work can replace the feed-forward fusion MLP with a GRU/TCN or Transformer using RSRP/CSI histories, and can train a contextual bandit to choose K and the re-sweep interval dynamically.
 
 | Predictor | Top-1 Accuracy | Top-3 Accuracy |
 | :---: | :---: | :---: |
-| Location only | 0.0% | 48.0% |
-| History only | 49.3% | 49.3% |
-| Combined | 0.0% | 49.3% |
+| Location MLP | 18.4% | 48.2% |
+| History Markov | 87.5% | 87.5% |
+| Fusion MLP | 73.4% | 79.1% |
 
 ---
 
@@ -548,11 +552,12 @@ Below are the key findings from each experiment, using the default system config
 | Decision | Rationale |
 | --- | --- |
 | **5G-inspired, not 3GPP-compliant** | Every formula is readable and teachable — no multi-hundred-parameter standards stack. Simplified UMa path-loss (28 + 22·log₁₀(d) + 20·log₁₀(f)) captures the essential physics. |
-| **NumPy + Matplotlib only** | No deep-learning framework dependency. `scipy` is optional (water-filling). Keeps the barrier to entry minimal. |
+| **NumPy + Matplotlib only** | The regularised softmax MLP is implemented in NumPy; no TensorFlow, PyTorch or scikit-learn dependency is required. |
 | **Modular single-responsibility files** | Each `.py` file owns one layer of the pipeline. Experiments are plug-and-play via the registry in `experiments/__init__.py`. |
 | **Cluster-based geometric channel** | More physically meaningful than i.i.d. Rayleigh for mmWave. Models LoS/NLoS with per-path delay, AoD, and Doppler. |
 | **Dataclass-based configuration** | `SystemConfig` is a frozen dataclass — immutable, hashable, and all parameters have descriptive names with defaults. |
 | **Deterministic seeding** | Every experiment derives its RNG from `cfg.seed + offset`, ensuring full reproducibility. |
+| **Raw-result persistence** | Every run writes arrays to `outputs/<experiment>.npz` and non-array metadata to JSON, so plots can be independently audited or regenerated. |
 
 ---
 
