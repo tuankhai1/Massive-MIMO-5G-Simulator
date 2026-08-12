@@ -131,7 +131,7 @@ The simulator is organized as a layered pipeline, where each layer feeds into th
 │  • Particle Swarm Optimization (PSO)                            │
 │  • Genetic Algorithm (GA) with tournament selection             │
 │  • Greedy marginal-rate power allocation                        │
-│  • NumPy MLP and Markov beam predictors                          │
+│  • NumPy MLP and Markov beam predictors                         │
 └──────────────────────────┬──────────────────────────────────────┘
                            │
                            ▼
@@ -258,7 +258,7 @@ pip install -r requirements.txt
 ### Usage
 
 ```bash
-# Run all 12 experiments (typically under one minute on a laptop)
+# Run all 12 experiments
 python main.py
 
 # List available experiments
