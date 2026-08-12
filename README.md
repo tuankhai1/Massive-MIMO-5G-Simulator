@@ -7,7 +7,6 @@
     <img src="https://img.shields.io/badge/python-3.10+-blue?logo=python&logoColor=white" alt="Python 3.10+">
     <img src="https://img.shields.io/badge/numpy-≥1.26-013243?logo=numpy&logoColor=white" alt="NumPy">
     <img src="https://img.shields.io/badge/matplotlib-≥3.8-11557c" alt="Matplotlib">
-    <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   </p>
 </p>
 
@@ -24,7 +23,6 @@
 - [Results & Analysis](#results--analysis)
 - [Key Design Decisions](#key-design-decisions)
 - [References](#references)
-- [License](#license)
 
 ---
 
@@ -566,11 +564,5 @@ Below are the key findings from each experiment, using the default system config
 4. va Ahmed, I. et al. — *A Survey on Hybrid Beamforming Techniques in 5G* (IEEE Comm. Surveys, 2018)
 5. Giordani, M. et al. — *A Tutorial on Beam Management for 3GPP NR at mmWave Frequencies* (IEEE Comm. Surveys, 2019)
 6. Kennedy, J. & Eberhart, R. — *Particle Swarm Optimization* (ICNN, 1995)
-
----
-
-## License
-
-This project is released under the [MIT License](LICENSE). You are free to use, modify, and distribute the code for academic and commercial purposes.
 
 ---
