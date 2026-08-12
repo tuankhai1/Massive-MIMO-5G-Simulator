@@ -225,13 +225,14 @@ def plot_codebook_size(data: dict, output: Path) -> None:
 def plot_overhead_vs_speed(data: dict, output: Path) -> None:
     fig, ax = plt.subplots(figsize=(8.4, 4.9))
     speeds = np.asarray(data["speeds_kmh"])
-    for key, label, marker, color in [
-        ("exhaustive_rate", "Exhaustive", "o", COLORS["blue"]),
-        ("hierarchical_rate", "Hierarchical", "s", COLORS["orange"]),
-        ("location_topk_rate", "Location top-K", "^", COLORS["green"]),
-        ("ml_topk_rate", "Fusion MLP top-K", "D", COLORS["purple"]),
+    for key, label, marker, color, linestyle in [
+        ("exhaustive_rate", "Exhaustive", "o", COLORS["blue"], "-"),
+        ("hierarchical_rate", "Hierarchical", "s", COLORS["orange"], "-"),
+        ("location_topk_rate", "Location top-K", "^", COLORS["green"], "-"),
+        ("fusion_mlp_rate", "Fusion MLP top-K", "D", COLORS["purple"], "-"),
+        ("gradient_boosted_rate", "Gradient-boosted top-K", "P", COLORS["red"], "--"),
     ]:
-        ax.plot(speeds, data[key], marker=marker, lw=2.2, ms=6,
+        ax.plot(speeds, data[key], marker=marker, linestyle=linestyle, lw=2.2, ms=6,
                 color=color, label=label)
     ax.set_xlabel("User speed (km/h)")
     ax.set_ylabel("Mean effective rate (bit/s/Hz)")
@@ -415,15 +416,16 @@ def plot_optimization(data: dict, output: Path) -> None:
 # -----------------------------------------------------------------------
 
 def plot_ml_ablation(data: dict, output: Path) -> None:
-    fig, axes = plt.subplots(1, 2, figsize=(10, 4.5))
+    fig, axes = plt.subplots(1, 3, figsize=(14, 4.5))
     methods = list(data["methods"])
+    display_labels = ["Location\nMLP", "History\nMarkov", "Fusion\nMLP", "Gradient\nBoosting"]
     x = np.arange(len(methods))
     width = 0.35
 
-    colors = [COLORS["blue"], COLORS["orange"], COLORS["purple"]]
+    colors = [COLORS["blue"], COLORS["orange"], COLORS["purple"], COLORS["green"]]
     bars = axes[0].bar(x, data["top1_accuracy"] * 100, width, color=colors)
     axes[0].set_xticks(x)
-    axes[0].set_xticklabels(methods)
+    axes[0].set_xticklabels(display_labels, fontsize=8.5)
     axes[0].set_ylabel("Top-1 accuracy (%)")
     axes[0].set_title("Beam prediction — top-1")
     axes[0].set_ylim(0, 105)
@@ -432,12 +434,21 @@ def plot_ml_ablation(data: dict, output: Path) -> None:
 
     bars = axes[1].bar(x, data["topk_accuracy"] * 100, width, color=colors)
     axes[1].set_xticks(x)
-    axes[1].set_xticklabels(methods)
+    axes[1].set_xticklabels(display_labels, fontsize=8.5)
     axes[1].set_ylabel(f"Top-{data['k']} accuracy (%)")
     axes[1].set_title(f"Beam prediction — top-{data['k']}")
     axes[1].set_ylim(0, 105)
     axes[1].bar_label(bars, fmt="%.1f%%", padding=3, fontsize=8)
     _style_axis(axes[1])
+
+    bars = axes[2].bar(x, data["topk_effective_rate"], width, color=colors)
+    axes[2].set_xticks(x)
+    axes[2].set_xticklabels(display_labels, fontsize=8.5)
+    axes[2].set_ylabel(f"Top-{data['k']} effective rate (bit/s/Hz)")
+    axes[2].set_title("Rate after pilot overhead")
+    axes[2].set_ylim(0, 1.15 * float(np.max(data["topk_effective_rate"])))
+    axes[2].bar_label(bars, fmt="%.2f", padding=3, fontsize=8)
+    _style_axis(axes[2])
 
     fig.suptitle("Trajectory-disjoint ML beam-prediction ablation", fontsize=13)
     _finish(fig, output)

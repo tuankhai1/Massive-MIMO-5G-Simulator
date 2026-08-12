@@ -132,8 +132,16 @@ def build_summary(results: dict, cfg: SystemConfig) -> str:
     if "ml_ablation" in results:
         d = results["ml_ablation"]
         lines.append("[ML Ablation]")
-        for method, t1, tk in zip(d["methods"], d["top1_accuracy"], d["topk_accuracy"]):
-            lines.append(f"  {method:<12s}: top-1={t1:.1%}  top-{d['k']}={tk:.1%}")
+        rates = d.get("topk_effective_rate")
+        for index, (method, t1, tk) in enumerate(zip(d["methods"], d["top1_accuracy"], d["topk_accuracy"])):
+            line = f"  {method:<18s}: top-1={t1:.1%}  top-{d['k']}={tk:.1%}"
+            if rates is not None:
+                line += f"  rate={rates[index]:.2f} bit/s/Hz"
+            lines.append(line)
+        if "exhaustive_effective_rate" in d:
+            lines.append(
+                f"  Exhaustive reference: rate={float(d['exhaustive_effective_rate']):.2f} bit/s/Hz"
+            )
         if "train_samples" in d and "test_samples" in d:
             lines.append(
                 f"  Trajectory-disjoint split: train={int(d['train_samples'])}  "

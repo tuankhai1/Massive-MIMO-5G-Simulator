@@ -14,7 +14,7 @@ from array_model import steering_vector
 from beamforming import multi_user_zf_precoder, top_k_around
 from channel_model import geometric_channel
 from config import SystemConfig
-from ml.beam_predictor import MLPBeamPredictor
+from ml.beam_predictor import GradientBoostedBeamPredictor, MLPBeamPredictor
 from ml.data_generator import split_episodes
 from phy import interpolate_channel_dft
 
@@ -85,3 +85,18 @@ def test_mlp_beam_predictor_learns_a_nonlinear_decision_boundary():
 
     accuracy = np.mean(np.array([predictor.predict(row) for row in features]) == labels)
     assert accuracy > 0.95
+
+
+def test_gradient_boosted_predictor_produces_normalized_top_k_scores():
+    rng = np.random.default_rng(31)
+    features = rng.uniform(-1.0, 1.0, size=(360, 2))
+    labels = ((features[:, 0] * features[:, 1]) > 0.0).astype(int)
+    predictor = GradientBoostedBeamPredictor(
+        max_iter=80, max_leaf_nodes=10, min_samples_leaf=8, seed=32, num_classes=2
+    ).fit(features, labels)
+
+    probabilities = predictor.predict_proba(features)
+    predictions = np.argmax(probabilities, axis=1)
+    assert np.mean(predictions == labels) > 0.95
+    np.testing.assert_allclose(probabilities.sum(axis=1), 1.0, atol=1e-10)
+    assert len(predictor.predict_top_k(features[0], 2)) == 2

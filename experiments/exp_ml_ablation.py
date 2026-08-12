@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import numpy as np
 
+from beamforming import effective_rate
 from config import SystemConfig
-from metrics import beam_alignment_accuracy
+from metrics import beam_alignment_accuracy, top_k_accuracy
 from ml.beam_predictor import (
+    GradientBoostedBeamPredictor,
     HistoryOnlyPredictor,
     MLPBeamPredictor,
 )
@@ -27,6 +29,7 @@ def run(cfg: SystemConfig) -> dict:
         steps_per_episode=cfg.ml_steps_per_episode,
     )
     labels = data["labels"]
+    beam_snr = data["beam_snr"]
     noisy_pos = data["noisy_positions"]
     velocities = data["velocities"]
     prev_beams = data["previous_beams"]
@@ -75,6 +78,19 @@ def run(cfg: SystemConfig) -> dict:
     comb_preds = np.argmax(comb_probabilities, axis=1)
     comb_acc = beam_alignment_accuracy(comb_preds, labels[evaluation_mask])
 
+    # --- Gradient-boosted trees ---
+    tree_pred = GradientBoostedBeamPredictor(
+        max_iter=cfg.gbt_max_iter,
+        learning_rate=cfg.gbt_learning_rate,
+        max_leaf_nodes=cfg.gbt_max_leaf_nodes,
+        min_samples_leaf=cfg.gbt_min_samples_leaf,
+        seed=cfg.seed + 513,
+        num_classes=cfg.codebook_beams,
+    ).fit(combined_features[train_mask], labels[train_mask])
+    tree_probabilities = tree_pred.predict_proba(combined_features[evaluation_mask])
+    tree_preds = np.argmax(tree_probabilities, axis=1)
+    tree_acc = beam_alignment_accuracy(tree_preds, labels[evaluation_mask])
+
     # --- Top-K accuracy ---
     loc_topk = [np.argsort(probabilities)[-cfg.top_k:][::-1] for probabilities in loc_probabilities]
     hist_topk = [
@@ -82,21 +98,50 @@ def run(cfg: SystemConfig) -> dict:
         for previous in prev_beams[evaluation_mask]
     ]
     comb_topk = [np.argsort(probabilities)[-cfg.top_k:][::-1] for probabilities in comb_probabilities]
+    tree_topk = [np.argsort(probabilities)[-cfg.top_k:][::-1] for probabilities in tree_probabilities]
 
-    from metrics import top_k_accuracy
     loc_topk_acc = top_k_accuracy(loc_topk, labels[evaluation_mask])
     hist_topk_acc = top_k_accuracy(hist_topk, labels[evaluation_mask])
     comb_topk_acc = top_k_accuracy(comb_topk, labels[evaluation_mask])
+    tree_topk_acc = top_k_accuracy(tree_topk, labels[evaluation_mask])
+
+    # Evaluate the rate after selecting the strongest of the predicted Top-K
+    # candidates.  The rate includes exactly K pilot measurements, so this is
+    # directly comparable across learnt predictors rather than accuracy alone.
+    test_snr = beam_snr[evaluation_mask]
+
+    def _topk_effective_rate(candidate_sets: list[np.ndarray]) -> float:
+        selected_snr = np.array([
+            np.max(snr_values[np.asarray(candidates, dtype=int)])
+            for snr_values, candidates in zip(test_snr, candidate_sets)
+        ])
+        return float(np.mean([
+            effective_rate(float(snr), cfg.top_k, cfg) for snr in selected_snr
+        ]))
+
+    location_rate = _topk_effective_rate(loc_topk)
+    history_rate = _topk_effective_rate(hist_topk)
+    fusion_rate = _topk_effective_rate(comb_topk)
+    tree_rate = _topk_effective_rate(tree_topk)
+    exhaustive_rate = float(np.mean([
+        effective_rate(float(np.max(snr_values)), cfg.codebook_beams, cfg)
+        for snr_values in test_snr
+    ]))
 
     return {
-        "methods": np.array(["Location MLP", "History Markov", "Fusion MLP"]),
-        "top1_accuracy": np.array([loc_acc, hist_acc, comb_acc]),
-        "topk_accuracy": np.array([loc_topk_acc, hist_topk_acc, comb_topk_acc]),
+        "methods": np.array([
+            "Location MLP", "History Markov", "Fusion MLP", "Gradient Boosting",
+        ]),
+        "top1_accuracy": np.array([loc_acc, hist_acc, comb_acc, tree_acc]),
+        "topk_accuracy": np.array([loc_topk_acc, hist_topk_acc, comb_topk_acc, tree_topk_acc]),
+        "topk_effective_rate": np.array([location_rate, history_rate, fusion_rate, tree_rate]),
+        "exhaustive_effective_rate": np.array(exhaustive_rate),
         "k": cfg.top_k,
         "test_labels": labels[evaluation_mask],
         "location_preds": loc_preds,
         "history_preds": hist_preds,
         "combined_preds": comb_preds,
+        "tree_preds": tree_preds,
         "location_loss": loc_pred.loss_history,
         "combined_loss": comb_pred.loss_history,
         "train_samples": np.array(int(train_mask.sum())),

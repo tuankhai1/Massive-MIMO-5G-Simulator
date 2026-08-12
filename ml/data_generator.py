@@ -30,8 +30,8 @@ def generate_beam_dataset(
 
     Returns
     -------
-    dict with keys: positions, noisy_positions, velocities,
-                    previous_beams, labels
+    dict with keys: positions, noisy_positions, velocities, previous_beams,
+                    labels and per-beam SNR values.
     """
     rng = np.random.default_rng(cfg.seed + 500)
     episodes = num_episodes or cfg.ml_train_episodes + cfg.ml_test_episodes
@@ -70,9 +70,11 @@ def generate_beam_dataset(
     codebook, _ = dft_codebook(cfg.antennas, cfg.codebook_beams)
 
     labels = np.empty(total_samples, dtype=int)
+    beam_snr = np.empty((total_samples, cfg.codebook_beams))
     for i, pos in enumerate(positions):
         ch = geometric_channel(pos, cfg, rng)
         snr = snr_per_beam(ch, codebook, cfg)
+        beam_snr[i] = snr
         labels[i] = int(np.argmax(snr))
 
     noisy_positions = positions + rng.normal(
@@ -89,6 +91,7 @@ def generate_beam_dataset(
         "velocities": velocities,
         "previous_beams": previous_beams,
         "labels": labels,
+        "beam_snr": beam_snr,
         "episode_ids": episode_ids,
         "is_episode_start": is_episode_start,
     }

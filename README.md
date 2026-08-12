@@ -28,7 +28,7 @@
 
 ## Overview
 
-A **modular, reproducible Python simulator** for a 5G-inspired millimeter-wave (mmWave) massive-MIMO link and network. It includes propagation, CP-OFDM, analog/hybrid/digital beamforming, codebook-based beam management, multi-user zero-forcing, mobility-aware handover, power allocation, and ML-assisted beam prediction. The implementation uses **NumPy + Matplotlib** only; the non-linear MLP is implemented directly in NumPy, so no external deep-learning framework is required.
+A **modular, reproducible Python simulator** for a 5G-inspired millimeter-wave (mmWave) massive-MIMO link and network. It includes propagation, CP-OFDM, analog/hybrid/digital beamforming, codebook-based beam management, multi-user zero-forcing, mobility-aware handover, power allocation, and ML-assisted beam prediction. The simulator uses **NumPy + Matplotlib**, with a lightweight NumPy MLP and a scikit-learn histogram gradient-boosted-tree classifier for tabular beam prediction; no deep-learning framework is required.
 
 The project ships **12 self-contained experiments**, each generating publication-ready plots and quantitative summaries, enabling rapid prototyping and benchmarking of beamforming and beam management strategies under realistic 5G-inspired conditions.
 
@@ -405,13 +405,14 @@ Below are the key findings from each experiment, using the default system config
   <img src="plots/overhead_vs_speed.png" width="65%" alt="Rate vs. user speed for different beam management strategies">
 </p>
 
-**What it shows:** Mean effective rate for exhaustive, hierarchical, location top-K, and Fusion-MLP top-K selection across user speeds. The training cost is repeated once per Jakes Doppler coherence interval, so speed directly changes the pilot budget.
+**What it shows:** Mean effective rate for exhaustive, hierarchical, location top-K, Fusion-MLP top-K and gradient-boosted Top-K selection across user speeds. The training cost is repeated once per Jakes Doppler coherence interval, so speed directly changes the pilot budget.
 
 **Key observations:**
 
 - Exhaustive sweeping degrades sharply at higher speed because a 32-pilot sweep must be repeated within a much shorter coherence time.
 - Hierarchical search is a robust middle ground: it needs 18 measurements but avoids the full-sweep Doppler penalty.
-- The Fusion-MLP top-K model maintains the highest effective rate in this scenario by predicting three candidates from noisy location, velocity and prior beam feedback. Location-only top-K is intentionally shown as a weaker, localisation-limited baseline.
+- Fusion-MLP and gradient-boosted Top-K both maintain the highest effective rate in this scenario. Their curves coincide because both recover a candidate set containing the best beam over these slowly changing evaluation routes.
+- The gradient-boosted model is trained on the same noisy location, velocity and one-hot prior-beam features as the Fusion MLP, keeping the comparison fair. Location-only top-K remains a deliberately weaker, localisation-limited baseline.
 
 ---
 
@@ -530,20 +531,23 @@ Below are the key findings from each experiment, using the default system config
   <img src="plots/ml_ablation.png" width="75%" alt="ML ablation: beam prediction accuracy by feature set">
 </p>
 
-**What it shows:** Top-1 and top-3 beam prediction accuracy for a location-only NumPy MLP, a Markov history baseline, and a fusion NumPy MLP. Training and test data are independent trajectories; the first sample of each test trajectory is excluded because it has no prior measured beam.
+**What it shows:** Top-1, top-3 and pilot-overhead-aware Top-3 effective rate for a location-only NumPy MLP, a Markov history baseline, a fusion NumPy MLP and histogram gradient-boosted trees. Training and test data are independent trajectories; the first sample of each test trajectory is excluded because it has no prior measured beam.
 
 **Key observations:**
 
 - The **Markov history baseline** achieves 87.5% top-1 because a previously measured beam is highly informative over a 1 ms update interval.
-- The **Fusion MLP** attains 73.4% top-1 and 79.1% top-3 using noisy location, velocity and one-hot beam feedback. It is the model used in the mobility-overhead comparison.
+- The **Fusion MLP** attains 73.4% top-1 and 79.1% top-3 using noisy location, velocity and one-hot beam feedback, and is retained as the mobility-overhead baseline.
+- **Gradient Boosting** reaches 86.1% top-1 and 87.5% top-3. Its predicted Top-3 candidates yield 10.30 bit/s/Hz after pilot overhead, exceeding the 10.03 bit/s/Hz exhaustive-sweep reference on the held-out trajectories.
 - Location-only MLP reaches 18.4% top-1 and 48.2% top-3 under 8 m localisation error. This makes the benefit of temporal feedback explicit rather than hiding it through an oracle feature.
 - Future work can replace the feed-forward fusion MLP with a GRU/TCN or Transformer using RSRP/CSI histories, and can train a contextual bandit to choose K and the re-sweep interval dynamically.
 
-| Predictor | Top-1 Accuracy | Top-3 Accuracy |
-| :---: | :---: | :---: |
-| Location MLP | 18.4% | 48.2% |
-| History Markov | 87.5% | 87.5% |
-| Fusion MLP | 73.4% | 79.1% |
+| Predictor | Top-1 Accuracy | Top-3 Accuracy | Top-3 Effective Rate |
+| :--- | :---: | :---: | :---: |
+| Location MLP | 18.4% | 48.2% | 8.49 bit/s/Hz |
+| History Markov | 87.5% | 87.5% | 9.62 bit/s/Hz |
+| Fusion MLP | 73.4% | 79.1% | 9.65 bit/s/Hz |
+| Gradient Boosting | 86.1% | 87.5% | 10.30 bit/s/Hz |
+| Exhaustive reference | 100.0% | 100.0% | 10.03 bit/s/Hz |
 
 ---
 
@@ -552,7 +556,7 @@ Below are the key findings from each experiment, using the default system config
 | Decision | Rationale |
 | --- | --- |
 | **5G-inspired, not 3GPP-compliant** | Every formula is readable and teachable — no multi-hundred-parameter standards stack. Simplified UMa path-loss (28 + 22·log₁₀(d) + 20·log₁₀(f)) captures the essential physics. |
-| **NumPy + Matplotlib only** | The regularised softmax MLP is implemented in NumPy; no TensorFlow, PyTorch or scikit-learn dependency is required. |
+| **Lightweight ML stack** | The regularised softmax MLP is implemented in NumPy; histogram gradient boosting uses scikit-learn. No TensorFlow or PyTorch dependency is required. |
 | **Modular single-responsibility files** | Each `.py` file owns one layer of the pipeline. Experiments are plug-and-play via the registry in `experiments/__init__.py`. |
 | **Cluster-based geometric channel** | More physically meaningful than i.i.d. Rayleigh for mmWave. Models LoS/NLoS with per-path delay, AoD, and Doppler. |
 | **Dataclass-based configuration** | `SystemConfig` is a frozen dataclass — immutable, hashable, and all parameters have descriptive names with defaults. |

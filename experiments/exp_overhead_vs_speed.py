@@ -11,7 +11,7 @@ from beam_management import run_beam_management
 from beamforming import snr_per_beam
 from channel_model import geometric_channel, mobility_route
 from config import SystemConfig
-from ml.beam_predictor import MLPBeamPredictor
+from ml.beam_predictor import GradientBoostedBeamPredictor, MLPBeamPredictor
 from ml.data_generator import beam_feature_matrix, generate_beam_dataset, split_episodes
 
 
@@ -41,11 +41,19 @@ def run(cfg: SystemConfig) -> dict:
         ml_data["noisy_positions"], ml_data["velocities"], ml_data["previous_beams"],
         cfg.codebook_beams,
     )
-    ml_predictor = MLPBeamPredictor(
+    fusion_mlp_predictor = MLPBeamPredictor(
         hidden_units=cfg.ml_hidden_units,
         learning_rate=cfg.ml_learning_rate,
         epochs=cfg.ml_epochs,
         seed=cfg.seed + 512,
+        num_classes=cfg.codebook_beams,
+    ).fit(ml_features[ml_train_mask], ml_data["labels"][ml_train_mask])
+    tree_predictor = GradientBoostedBeamPredictor(
+        max_iter=cfg.gbt_max_iter,
+        learning_rate=cfg.gbt_learning_rate,
+        max_leaf_nodes=cfg.gbt_max_leaf_nodes,
+        min_samples_leaf=cfg.gbt_min_samples_leaf,
+        seed=cfg.seed + 513,
         num_classes=cfg.codebook_beams,
     ).fit(ml_features[ml_train_mask], ml_data["labels"][ml_train_mask])
 
@@ -54,7 +62,8 @@ def run(cfg: SystemConfig) -> dict:
         "exhaustive_rate": [],
         "hierarchical_rate": [],
         "location_topk_rate": [],
-        "ml_topk_rate": [],
+        "fusion_mlp_rate": [],
+        "gradient_boosted_rate": [],
     }
 
     for speed in speeds_mps:
@@ -69,16 +78,22 @@ def run(cfg: SystemConfig) -> dict:
         coherence_s = max(0.423 / max(max_doppler_hz, 1e-12), cfg.pilot_s * cfg.codebook_beams)
 
         local_cfg = replace(cfg, route_steps=steps)
-        bm = run_beam_management(
+        mlp_bm = run_beam_management(
             positions, channels, codebook, freqs, snr_per_beam, local_cfg,
             retraining_period_s=coherence_s,
-            ml_predictor=ml_predictor,
+            ml_predictor=fusion_mlp_predictor,
+        )
+        tree_bm = run_beam_management(
+            positions, channels, codebook, freqs, snr_per_beam, local_cfg,
+            retraining_period_s=coherence_s,
+            ml_predictor=tree_predictor,
         )
 
-        results["exhaustive_rate"].append(float(np.mean(bm["exhaustive_rate"])))
-        results["hierarchical_rate"].append(float(np.mean(bm["hierarchical_rate"])))
-        results["location_topk_rate"].append(float(np.mean(bm["location_topk_rate"])))
-        results["ml_topk_rate"].append(float(np.mean(bm["ml_topk_rate"])))
+        results["exhaustive_rate"].append(float(np.mean(mlp_bm["exhaustive_rate"])))
+        results["hierarchical_rate"].append(float(np.mean(mlp_bm["hierarchical_rate"])))
+        results["location_topk_rate"].append(float(np.mean(mlp_bm["location_topk_rate"])))
+        results["fusion_mlp_rate"].append(float(np.mean(mlp_bm["ml_topk_rate"])))
+        results["gradient_boosted_rate"].append(float(np.mean(tree_bm["ml_topk_rate"])))
 
     for k in list(results.keys()):
         if k != "speeds_kmh":

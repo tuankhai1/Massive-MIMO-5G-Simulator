@@ -1,4 +1,4 @@
-"""Dependency-free beam predictors for the ML ablation study.
+"""Beam predictors for the ML ablation study.
 
 Three predictors with a common interface:
     .fit(features, labels)
@@ -17,6 +17,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import numpy as np
+
+try:
+    from sklearn.ensemble import HistGradientBoostingClassifier
+except ImportError:  # pragma: no cover - installation is enforced by requirements.txt
+    HistGradientBoostingClassifier = None
 
 
 # ===================================================================
@@ -264,6 +269,77 @@ class MLPBeamPredictor:
         h2 = np.maximum(h1 @ W2 + b2, 0.0)
         probabilities = self._softmax(h2 @ W3 + b3)
         return probabilities[0] if was_vector else probabilities
+
+    def predict(self, feature: np.ndarray) -> int:
+        return int(np.argmax(self.predict_proba(feature)))
+
+    def predict_top_k(self, feature: np.ndarray, k: int) -> np.ndarray:
+        probabilities = self.predict_proba(feature)
+        k_eff = min(k, len(probabilities))
+        return np.argsort(probabilities)[-k_eff:][::-1]
+
+
+# ===================================================================
+# Histogram gradient-boosted trees
+# ===================================================================
+
+@dataclass
+class GradientBoostedBeamPredictor:
+    """Probabilistic gradient-boosted-tree beam classifier.
+
+    Histogram gradient boosting is a CPU-friendly model for the simulator's
+    tabular location, motion and beam-history features.  It exposes class
+    scores for the same Top-K pilot-selection interface as the MLP.
+    """
+
+    max_iter: int = 180
+    learning_rate: float = 0.08
+    max_leaf_nodes: int = 15
+    min_samples_leaf: int = 12
+    l2_regularization: float = 1e-3
+    seed: int = 0
+    num_classes: int = 32
+    _model: object | None = field(default=None, repr=False)
+
+    def fit(self, features: np.ndarray, labels: np.ndarray) -> "GradientBoostedBeamPredictor":
+        if HistGradientBoostingClassifier is None:
+            raise ImportError(
+                "GradientBoostedBeamPredictor requires scikit-learn. "
+                "Install the dependencies from requirements.txt."
+            )
+        features = np.asarray(features, dtype=float)
+        labels = np.asarray(labels, dtype=int)
+        if features.ndim != 2 or labels.ndim != 1 or len(features) != len(labels):
+            raise ValueError("features must be (N, D) and labels must be (N,)")
+        if len(labels) == 0:
+            raise ValueError("Cannot fit GradientBoostedBeamPredictor with no samples")
+
+        self.num_classes = max(self.num_classes, int(labels.max()) + 1)
+        self._model = HistGradientBoostingClassifier(
+            learning_rate=self.learning_rate,
+            max_iter=self.max_iter,
+            max_leaf_nodes=self.max_leaf_nodes,
+            min_samples_leaf=self.min_samples_leaf,
+            l2_regularization=self.l2_regularization,
+            early_stopping=True,
+            validation_fraction=0.15,
+            n_iter_no_change=18,
+            random_state=self.seed,
+        ).fit(features, labels)
+        return self
+
+    def predict_proba(self, features: np.ndarray) -> np.ndarray:
+        if self._model is None:
+            raise RuntimeError("Fit before predicting.")
+        values = np.asarray(features, dtype=float)
+        was_vector = values.ndim == 1
+        probabilities = self._model.predict_proba(np.atleast_2d(values))
+
+        # A trajectory-disjoint train split may omit a rare beam.  Expand
+        # observed classes back to the full codebook index space.
+        full_probabilities = np.zeros((len(probabilities), self.num_classes))
+        full_probabilities[:, self._model.classes_.astype(int)] = probabilities
+        return full_probabilities[0] if was_vector else full_probabilities
 
     def predict(self, feature: np.ndarray) -> int:
         return int(np.argmax(self.predict_proba(feature)))

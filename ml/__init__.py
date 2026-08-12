@@ -11,6 +11,7 @@ from ml.beam_predictor import (
     LocationOnlyPredictor,
     HistoryOnlyPredictor,
     CombinedPredictor,
+    GradientBoostedBeamPredictor,
     MLPBeamPredictor,
 )
 
@@ -23,5 +24,6 @@ __all__ = [
     "LocationOnlyPredictor",
     "HistoryOnlyPredictor",
     "CombinedPredictor",
+    "GradientBoostedBeamPredictor",
     "MLPBeamPredictor",
 ]

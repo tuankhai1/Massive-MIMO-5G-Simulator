@@ -57,6 +57,10 @@ class SystemConfig:
     ml_hidden_units: int = 64
     ml_epochs: int = 180
     ml_learning_rate: float = 0.025
+    gbt_max_iter: int = 180
+    gbt_learning_rate: float = 0.08
+    gbt_max_leaf_nodes: int = 15
+    gbt_min_samples_leaf: int = 12
     ml_train_episodes: int = 72
     ml_test_episodes: int = 24
     ml_steps_per_episode: int = 48
