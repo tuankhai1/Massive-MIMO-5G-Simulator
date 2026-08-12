@@ -10,6 +10,7 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.ticker import LogLocator, NullLocator
 import numpy as np
 
 from metrics import cdf
@@ -28,7 +29,11 @@ plt.rcParams.update({
     "axes.spines.top": False,
     "axes.spines.right": False,
     "axes.titleweight": "semibold",
+    "axes.titlepad": 10,
+    "axes.labelpad": 7,
     "figure.facecolor": "white",
+    "legend.framealpha": 0.92,
+    "legend.edgecolor": "#CBD5E1",
 })
 
 
@@ -43,8 +48,34 @@ def _finish(fig_or_none, output: Path) -> None:
 
 
 def _style_axis(ax) -> None:
-    ax.grid(alpha=0.24, linewidth=0.8)
+    """Keep common axis layering without drawing a background grid."""
     ax.set_axisbelow(True)
+
+
+def _style_line_axis(ax) -> None:
+    """Apply a consistent readable treatment to line-based result charts."""
+    _style_axis(ax)
+    ax.tick_params(axis="both", which="major", labelsize=9)
+
+
+def _numeric_x_axis(ax, values: np.ndarray, padding_step: float) -> np.ndarray:
+    """Keep physical x positions and label only the simulated values."""
+    values = np.asarray(values, dtype=float)
+    span = float(values.max() - values.min())
+    padding = max(0.04 * span, 0.5 * padding_step)
+    x_min, x_max = values.min() - padding, values.max() + padding
+
+    ax.set_xlim(x_min, x_max)
+    ax.set_xticks(values, [f"{value:g}" for value in values])
+    ax.xaxis.set_minor_locator(NullLocator())
+    return values
+
+
+def _combined_legend(ax, extra_ax, **kwargs) -> None:
+    """Create a single legend for a paired-axis plot."""
+    lines, labels = ax.get_legend_handles_labels()
+    extra_lines, extra_labels = extra_ax.get_legend_handles_labels()
+    ax.legend(lines + extra_lines, labels + extra_labels, **kwargs)
 
 
 # -----------------------------------------------------------------------
@@ -59,12 +90,12 @@ def plot_beam_patterns(data: dict, output: Path) -> None:
     for idx, N in enumerate(sizes):
         ax = axes[idx]
         for beam_db in data["patterns"][N]:
-            ax.plot(angles, beam_db, linewidth=0.8)
+            ax.plot(angles, beam_db, linewidth=1.15, alpha=0.9)
         ax.set_ylim(-35, 1)
         ax.set_title(f"ULA  N = {N}")
         ax.set_xlabel("Angle (°)")
         ax.set_ylabel("Normalized gain (dB)")
-        _style_axis(ax)
+        _style_line_axis(ax)
     fig.suptitle("DFT-codebook beam patterns vs. array size", fontsize=13)
     _finish(fig, output)
 
@@ -88,7 +119,8 @@ def plot_snr_vs_angle(data: dict, output: Path) -> None:
         ax.set_xlabel("User angle (°)")
         ax.set_ylabel("Distance (m)")
         ax.set_title(label)
-        plt.colorbar(im, ax=ax)
+        colorbar = plt.colorbar(im, ax=ax, pad=0.025)
+        colorbar.ax.tick_params(labelsize=8)
     fig.suptitle("SNR and rate vs. user angle and distance", fontsize=13)
     _finish(fig, output)
 
@@ -116,9 +148,14 @@ def plot_ofdm_ber(data: dict, output: Path) -> None:
     ax.set_xlabel("Pre-beamforming SNR (dB)")
     ax.set_ylabel("Bit error rate")
     ax.set_title("CP-OFDM over multipath channel with LS pilot estimation")
+    ax.set_xlim(float(np.min(data["snr_db"])) - 0.8, float(np.max(snr_16)) + 0.8)
+    ax.set_xticks(np.arange(0, int(np.max(snr_16)) + 1, 5))
     ax.set_ylim(bottom=floor / 1.8, top=0.6)
-    ax.grid(alpha=0.24, which="both")
-    ax.legend(frameon=True, fontsize=9)
+    ax.yaxis.set_major_locator(LogLocator(base=10.0, numticks=6))
+    ax.yaxis.set_minor_locator(NullLocator())
+    ax.xaxis.set_minor_locator(NullLocator())
+    ax.set_axisbelow(True)
+    ax.legend(frameon=True, fontsize=9, loc="upper right")
     ax.text(0.01, 0.02, "Values at 10⁻⁵ indicate zero observed errors.",
             transform=ax.transAxes, fontsize=8, color=COLORS["slate"])
     _finish(fig, output)
@@ -131,25 +168,26 @@ def plot_ofdm_ber(data: dict, output: Path) -> None:
 def plot_rate_vs_antennas(data: dict, output: Path) -> None:
     fig, ax1 = plt.subplots(figsize=(8, 5))
     ax2 = ax1.twinx()
+    antennas = np.asarray(data["antennas"])
     # Three rate curves
     if "raw_rate" in data:
-        ax1.plot(data["antennas"], data["raw_rate"], "D-", color=COLORS["green"],
+        ax1.plot(antennas, data["raw_rate"], "D-", color=COLORS["green"],
                  lw=2, label="Raw rate (no training overhead)")
-    ax1.plot(data["antennas"], data["rate"], "o-", color=COLORS["blue"], lw=2,
+    ax1.plot(antennas, data["rate"], "o-", color=COLORS["blue"], lw=2,
              label="Effective rate (exhaustive sweep)")
     if "topk_rate" in data:
-        ax1.plot(data["antennas"], data["topk_rate"], "s-", color=COLORS["purple"], lw=2,
+        ax1.plot(antennas, data["topk_rate"], "s-", color=COLORS["purple"], lw=2,
                  label="Effective rate (location top-K)")
-    ax2.plot(data["antennas"], data["peak_snr_db"], "^--", color=COLORS["orange"],
+    ax2.plot(antennas, data["peak_snr_db"], "^--", color=COLORS["orange"],
              alpha=0.85, lw=1.8, label="Peak SNR")
     ax1.set_xlabel("Number of antenna elements")
     ax1.set_ylabel("Mean rate (bit/s/Hz)")
-    ax2.set_ylabel("Mean peak SNR (dB)", color="tab:orange")
+    ax2.set_ylabel("Mean peak SNR (dB)")
     ax1.set_title("Array Gain vs. Training Overhead")
-    _style_axis(ax1)
-    lines1, labels1 = ax1.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
-    ax1.legend(lines1 + lines2, labels1 + labels2, fontsize=9)
+    _style_line_axis(ax1)
+    _numeric_x_axis(ax1, antennas, padding_step=4)
+    ax2.tick_params(axis="y", colors="black", labelsize=9)
+    _combined_legend(ax1, ax2, fontsize=9, loc="upper left")
     _finish(fig, output)
 
 
@@ -158,20 +196,25 @@ def plot_rate_vs_antennas(data: dict, output: Path) -> None:
 # -----------------------------------------------------------------------
 
 def plot_codebook_size(data: dict, output: Path) -> None:
-    fig, ax1 = plt.subplots(figsize=(7.5, 4.5))
+    fig, ax1 = plt.subplots(figsize=(7.8, 4.9))
     ax2 = ax1.twinx()
-    ax1.plot(data["codebook_size"], data["rate"], "o-", color=COLORS["blue"],
+    sizes = np.asarray(data["codebook_size"])
+    ax1.plot(sizes, data["rate"], "o-", color=COLORS["blue"],
              lw=2.1, label="Effective rate")
-    ax2.plot(data["codebook_size"], data["peak_snr_db"], "s--",
+    ax2.plot(sizes, data["peak_snr_db"], "s--",
              color=COLORS["orange"], lw=2.0, label="Peak SNR")
     ax1.set_xlabel("Codebook beams swept")
     ax1.set_ylabel("Effective spectral efficiency (bit/s/Hz)")
     ax2.set_ylabel("Peak post-BF SNR (dB)")
     ax1.set_title("Beam quality vs. training overhead")
-    _style_axis(ax1)
-    lines1, labels1 = ax1.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
-    ax1.legend(lines1 + lines2, labels1 + labels2)
+    _style_line_axis(ax1)
+    _numeric_x_axis(ax1, sizes, padding_step=8)
+    ax2.tick_params(axis="y", colors="black", labelsize=9)
+    _combined_legend(
+        ax1, ax2,
+        loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=2,
+        frameon=False, fontsize=9,
+    )
     _finish(fig, output)
 
 
@@ -181,18 +224,20 @@ def plot_codebook_size(data: dict, output: Path) -> None:
 
 def plot_overhead_vs_speed(data: dict, output: Path) -> None:
     fig, ax = plt.subplots(figsize=(8.4, 4.9))
+    speeds = np.asarray(data["speeds_kmh"])
     for key, label, marker, color in [
         ("exhaustive_rate", "Exhaustive", "o", COLORS["blue"]),
         ("hierarchical_rate", "Hierarchical", "s", COLORS["orange"]),
         ("location_topk_rate", "Location top-K", "^", COLORS["green"]),
         ("ml_topk_rate", "Fusion MLP top-K", "D", COLORS["purple"]),
     ]:
-        ax.plot(data["speeds_kmh"], data[key], marker=marker, lw=2.2, ms=6,
+        ax.plot(speeds, data[key], marker=marker, lw=2.2, ms=6,
                 color=color, label=label)
     ax.set_xlabel("User speed (km/h)")
     ax.set_ylabel("Mean effective rate (bit/s/Hz)")
     ax.set_title("Doppler-limited beam-training overhead under mobility")
-    _style_axis(ax)
+    _style_line_axis(ax)
+    _numeric_x_axis(ax, speeds, padding_step=10)
     ax.legend(ncol=2, fontsize=8.5, frameon=True)
     _finish(fig, output)
 
@@ -250,30 +295,33 @@ def plot_bf_comparison(data: dict, output: Path) -> None:
     fig, axes = plt.subplots(1, 2, figsize=(13, 4.5))
 
     # CDF
-    for key, label in [
-        ("analog_rates", "Analog"),
-        ("hybrid_rates", "Hybrid"),
-        ("digital_rates", "Digital"),
+    for key, label, color in [
+        ("analog_rates", "Analog", COLORS["blue"]),
+        ("hybrid_rates", "Hybrid", COLORS["orange"]),
+        ("digital_rates", "Digital", COLORS["green"]),
     ]:
         vals, prob = cdf(data[key])
-        axes[0].plot(vals, prob, label=label)
+        axes[0].plot(vals, prob, lw=2.0, color=color, label=label)
     axes[0].set_xlabel("Spectral efficiency (bit/s/Hz)")
     axes[0].set_ylabel("CDF")
     axes[0].set_title("Rate CDF by beamforming architecture")
-    _style_axis(axes[0])
+    _style_line_axis(axes[0])
     axes[0].legend()
 
     # vs antenna count
-    for key, label in [
-        ("analog_vs_ant", "Analog"),
-        ("hybrid_vs_ant", "Hybrid"),
-        ("digital_vs_ant", "Digital"),
+    antennas = np.asarray(data["antennas"])
+    for key, label, color, marker in [
+        ("analog_vs_ant", "Analog", COLORS["blue"], "o"),
+        ("hybrid_vs_ant", "Hybrid", COLORS["orange"], "s"),
+        ("digital_vs_ant", "Digital", COLORS["green"], "D"),
     ]:
-        axes[1].plot(data["antennas"], data[key], "o-", label=label)
+        axes[1].plot(antennas, data[key], marker=marker, lw=2.0,
+                     color=color, label=label)
     axes[1].set_xlabel("Antenna elements")
     axes[1].set_ylabel("Mean rate (bit/s/Hz)")
     axes[1].set_title("Rate vs. array size")
-    _style_axis(axes[1])
+    _style_line_axis(axes[1])
+    _numeric_x_axis(axes[1], antennas, padding_step=4)
     axes[1].legend()
 
     fig.suptitle("Analog vs. Hybrid vs. Digital Beamforming", fontsize=13)
@@ -286,16 +334,18 @@ def plot_bf_comparison(data: dict, output: Path) -> None:
 
 def plot_multiuser(data: dict, output: Path) -> None:
     fig, axes = plt.subplots(1, 3, figsize=(14, 4))
+    users = np.asarray(data["users"])
     specs = [
         ("sum_rate", "Sum rate (bit/s/Hz)"),
         ("per_user_rate", "Per-user rate (bit/s/Hz)"),
         ("fairness", "Jain fairness index"),
     ]
     for ax, (key, ylabel) in zip(axes, specs):
-        ax.plot(data["users"], data[key], "o-")
+        ax.plot(users, data[key], "o-", lw=2.1, ms=6, color=COLORS["blue"])
         ax.set_xlabel("Number of users")
         ax.set_ylabel(ylabel)
-        _style_axis(ax)
+        _style_line_axis(ax)
+        _numeric_x_axis(ax, users, padding_step=2)
     fig.suptitle("Multi-user ZF beamforming", fontsize=13)
     _finish(fig, output)
 
@@ -306,11 +356,11 @@ def plot_multiuser(data: dict, output: Path) -> None:
 
 def plot_handover(data: dict, output: Path) -> None:
     fig, axes = plt.subplots(1, 3, figsize=(14, 4))
-    speeds = data["speeds_kmh"]
+    speeds = np.asarray(data["speeds_kmh"])
 
     # Helper: plot line with optional 95% CI shading
     def _plot_ci(ax, key, marker, color, ylabel, title):
-        ax.plot(speeds, data[key], f"{marker}-", color=color)
+        ax.plot(speeds, data[key], f"{marker}-", color=color, lw=2.1, ms=6)
         ci_lo = f"{key}_ci_low"
         ci_hi = f"{key}_ci_high"
         if ci_lo in data and ci_hi in data:
@@ -325,7 +375,8 @@ def plot_handover(data: dict, output: Path) -> None:
         if "prob" in key or "rate" in key:
             upper_bound = max(float(np.max(upper)), float(np.max(data[key])))
             ax.set_ylim(0.0, min(1.0, max(0.02, 1.18 * upper_bound)))
-        _style_axis(ax)
+        _style_line_axis(ax)
+        _numeric_x_axis(ax, speeds, padding_step=10)
 
     _plot_ci(axes[0], "outage_prob", "o", "tab:red",
              "Outage probability", "Outage vs. speed")
@@ -354,7 +405,7 @@ def plot_optimization(data: dict, output: Path) -> None:
     ax.set_xlabel("Iteration / generation")
     ax.set_ylabel("Proportional-fair utility")
     ax.set_title("Power-allocation convergence against grid-search reference")
-    _style_axis(ax)
+    _style_line_axis(ax)
     ax.legend()
     _finish(fig, output)
 
