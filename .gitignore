@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Private / generated files
+results/
+outputs/
+report/report.pdf
+report/report.tex
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
