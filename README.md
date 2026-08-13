@@ -81,7 +81,7 @@ The simulator is organized as a layered pipeline, where each layer feeds into th
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    SYSTEM CONFIGURATION                         │
-│  carrier=28 GHz, BW=100 MHz, Nt=32, Nbeams=32, one stream      │
+│  carrier=28 GHz, BW=100 MHz, Nt=32, Nbeams=32, one stream       │
 └──────────────────────────┬──────────────────────────────────────┘
                            │
                            ▼
