@@ -1,7 +1,7 @@
 <p align="center">
   <h1 align="center"> mmWave Massive-MIMO 5G Simulator</h1>
-  <p align="center">
-    <em>End-to-end beamforming and beam management for 5G NR millimeter-wave networks</em>
+  <!-- <p align="center">
+    <em>End-to-end beamforming and beam management for 5G NR millimeter-wave networks</em> -->
   </p>
   <p align="center">
     <img src="https://img.shields.io/badge/python-3.10+-blue?logo=python&logoColor=white" alt="Python 3.10+">
