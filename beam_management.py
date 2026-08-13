@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from algorithms.hierarchical_search import build_hierarchical_codebook, hierarchical_beam_search
 from beamforming import best_beam, effective_rate, top_k_around
 
 
@@ -27,46 +28,24 @@ def location_beam(
 
 
 # ===================================================================
-# Hierarchical codebook (multi-resolution)
+# Hierarchical codebook (multi-resolution compatibility helpers)
 # ===================================================================
 
 def hierarchical_codebook(
     num_antennas: int,
     num_levels: int = 3,
-) -> list[tuple[np.ndarray, int]]:
-    """Build a set of codebooks with increasing resolution.
+) -> list[np.ndarray]:
+    """Return the canonical multi-resolution codebook.
 
-    Level 0 has the widest beams (fewest beams), level ``num_levels-1``
-    has the narrowest (most beams).
-
-    Returns
-    -------
-    codebooks : list of (codebook_matrix, num_beams)
-        Each codebook matrix has shape ``(num_antennas, num_beams_at_level)``.
+    This compatibility helper keeps existing imports working.  The only
+    hierarchy implementation lives in :mod:`algorithms.hierarchical_search`.
     """
-    from array_model import steering_vector
-
-    codebooks = []
-    for level in range(num_levels):
-        num_beams = max(2, num_antennas // (2 ** (num_levels - 1 - level)))
-        # Wider beams at low levels by using fewer DFT points
-        freqs = -1.0 + 2.0 * np.arange(num_beams) / num_beams
-        # Use a sub-array to create wider beams at lower levels
-        sub_size = max(2, num_antennas // (2 ** (num_levels - 1 - level)))
-        cols = []
-        for f in freqs:
-            v_sub = steering_vector(sub_size, f)
-            # Zero-pad to full antenna dimension
-            v_full = np.zeros(num_antennas, dtype=complex)
-            v_full[:sub_size] = v_sub * np.sqrt(sub_size / num_antennas)
-            cols.append(v_full / (np.linalg.norm(v_full) + 1e-12))
-        codebooks.append((np.column_stack(cols), num_beams))
-    return codebooks
+    return build_hierarchical_codebook(num_antennas, num_levels)
 
 
 def hierarchical_search(
     channel: np.ndarray,
-    codebooks: list[tuple[np.ndarray, int]],
+    codebooks: list[np.ndarray],
     beams_per_level: int = 2,
 ) -> tuple[int, int]:
     """Multi-stage beam search through hierarchical codebooks.
@@ -81,32 +60,8 @@ def hierarchical_search(
     total_measurements : int
         Total number of beam measurements (pilot cost).
     """
-    total_measurements = 0
-    # Start by searching all beams at the coarsest level
-    cb, nb = codebooks[0]
-    gains = np.abs(channel.conj() @ cb) ** 2
-    best_at_level = int(np.argmax(gains))
-    total_measurements += nb
-
-    for level_idx in range(1, len(codebooks)):
-        cb, nb = codebooks[level_idx]
-        # Map the coarse winner to a region in the finer codebook
-        ratio = nb / codebooks[level_idx - 1][1]
-        center = int(best_at_level * ratio)
-        half_span = max(1, beams_per_level)
-        candidates = np.unique(
-            np.clip(
-                np.arange(center - half_span, center + half_span + 1),
-                0,
-                nb - 1,
-            )
-        )
-        gains_subset = np.abs(channel.conj() @ cb[:, candidates]) ** 2
-        best_in_subset = int(np.argmax(gains_subset))
-        best_at_level = int(candidates[best_in_subset])
-        total_measurements += len(candidates)
-
-    return best_at_level, total_measurements
+    beam, pilots, _ = hierarchical_beam_search(channel, codebooks, beams_per_level)
+    return beam, pilots
 
 
 # ===================================================================
@@ -197,6 +152,12 @@ def run_beam_management(
     num_steps = len(positions)
     if num_steps != len(channels):
         raise ValueError("positions and channels must have the same length")
+    if num_steps < 2:
+        raise ValueError("At least two beam-management steps are required.")
+    if codebook.shape != (cfg.antennas, cfg.codebook_beams):
+        raise ValueError("codebook shape must match the antenna and beam configuration.")
+    if len(spatial_frequencies) != cfg.codebook_beams:
+        raise ValueError("spatial_frequencies must have one value per codebook beam.")
     all_snr = np.vstack([snr_function(ch, codebook, cfg) for ch in channels])
     labels = np.argmax(all_snr, axis=1)
     velocity = np.vstack([np.zeros(2), np.diff(positions, axis=0)])
@@ -230,7 +191,9 @@ def run_beam_management(
             raise ValueError("retraining_period_s must be positive")
 
     # Build hierarchical codebooks for this antenna/codebook config
-    h_codebooks = hierarchical_codebook(cfg.antennas, num_levels=3)
+    h_codebooks = build_hierarchical_codebook(
+        cfg.antennas, num_levels=3, finest_beams=cfg.codebook_beams,
+    )
 
     method_names = ["exhaustive", "hierarchical", "location_topk", "ml_topk"]
     selected = {n: np.empty(num_steps, dtype=int) for n in method_names}
@@ -250,7 +213,7 @@ def run_beam_management(
         )
 
         # --- Hierarchical ---
-        h_beam, h_pilots = hierarchical_search(channels[idx], h_codebooks)
+        h_beam, h_pilots, _ = hierarchical_beam_search(channels[idx], h_codebooks)
         selected["hierarchical"][idx] = h_beam
         pilots_used["hierarchical"][idx] = h_pilots
         rates["hierarchical"][idx] = effective_rate(

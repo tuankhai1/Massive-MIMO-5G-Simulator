@@ -3,7 +3,7 @@
 ====================================================================
 Carrier: 28.0 GHz   |   BW: 100 MHz   |   Tx: 30 dBm
 Antennas: 32   |   Codebook beams: 32   |   RF chains: 4
-Users: 4   |   Subcarriers: 64   |   Top-K: 3
+Subcarriers: 64   |   Top-K: 3
 --------------------------------------------------------------------
 [Rate vs. Antennas — Array Gain vs. Training Overhead]
     Nt       Raw      Exh.     Top-K
@@ -53,4 +53,6 @@ Users: 4   |   Subcarriers: 64   |   Top-K: 3
   Gradient Boosting : top-1=86.1%  top-3=87.5%  rate=10.30 bit/s/Hz
   Exhaustive reference: rate=10.03 bit/s/Hz
   Trajectory-disjoint split: train=3456  test=1128
+[Additional Generated Results]
+  Plots and raw arrays saved for: beam_patterns, snr_vs_angle, ofdm_ber, overhead_vs_speed
 ====================================================================

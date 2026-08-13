@@ -200,12 +200,19 @@ def hybrid_beamformer(
     codebook : (Nt, B) — analog beam codebook
     num_rf_chains : int
     num_streams : int
+        Must be 1. This educational single-user model does not model spatial
+        multiplexing.
 
     Returns
     -------
     F_RF : (Nt, num_rf_chains) — analog precoder (columns from codebook)
-    F_BB : (num_rf_chains, num_streams) — digital baseband precoder
+    F_BB : (num_rf_chains, 1) — digital baseband precoder
     """
+    if num_streams != 1:
+        raise ValueError("The educational hybrid-beamforming model supports one stream only.")
+    if not 1 <= num_rf_chains <= codebook.shape[1]:
+        raise ValueError("num_rf_chains must be between 1 and the codebook size.")
+
     Nt = len(channel)
     residual = channel.copy()
     selected = []
@@ -272,7 +279,7 @@ def compare_beamforming(
     rate_digital = float(np.log2(1.0 + snr_digital))
 
     # Hybrid
-    F_RF, F_BB = hybrid_beamformer(channel, codebook, cfg.num_rf_chains, cfg.num_streams)
+    F_RF, F_BB = hybrid_beamformer(channel, codebook, cfg.num_rf_chains)
     rate_hybrid = hybrid_rate(channel, F_RF, F_BB, cfg.tx_power_w, cfg.noise_power_w)
 
     return {

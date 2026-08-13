@@ -6,14 +6,16 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from algorithms.hierarchical_search import build_hierarchical_codebook, hierarchical_beam_search
-from array_model import steering_vector
-from beamforming import multi_user_zf_precoder, top_k_around
+from array_model import dft_codebook, steering_vector
+from beamforming import hybrid_beamformer, multi_user_zf_precoder, top_k_around
 from channel_model import geometric_channel
 from config import SystemConfig
+from main import build_summary
 from ml.beam_predictor import GradientBoostedBeamPredictor, MLPBeamPredictor
 from ml.data_generator import split_episodes
 from phy import interpolate_channel_dft
@@ -33,6 +35,45 @@ def test_hierarchical_search_returns_its_own_fine_codebook_beam():
     assert 0 <= beam < num_antennas
     assert 0 < pilots < num_antennas
     assert len(gains) == 3
+
+
+def test_hierarchical_codebook_final_level_matches_requested_dft_codebook():
+    codebooks = build_hierarchical_codebook(32, num_levels=3, finest_beams=48)
+    expected, _ = dft_codebook(32, 48)
+
+    assert [codebook.shape[1] for codebook in codebooks] == [12, 24, 48]
+    np.testing.assert_allclose(codebooks[-1], expected)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"antennas": 0}, "antennas"),
+        ({"cp_length": 64}, "cp_length"),
+        ({"top_k": 33}, "top_k"),
+        ({"num_rf_chains": 33}, "num_rf_chains"),
+        ({"codebook_beams": 32.0}, "integers"),
+    ],
+)
+def test_system_config_rejects_invalid_core_values(kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        SystemConfig(**kwargs)
+
+
+def test_hybrid_beamforming_rejects_unsupported_multi_stream_mode():
+    codebook, _ = dft_codebook(8, 8)
+    channel = steering_vector(8, 0.25)
+
+    with pytest.raises(ValueError, match="one stream"):
+        hybrid_beamformer(channel, codebook, num_rf_chains=2, num_streams=2)
+
+
+def test_summary_builds_with_the_active_configuration_surface():
+    summary = build_summary({"ofdm_ber": {}}, SystemConfig())
+
+    assert "Subcarriers: 64" in summary
+    assert "Users:" not in summary
+    assert "ofdm_ber" in summary
 
 
 def test_geometric_channel_includes_coherent_array_gain():

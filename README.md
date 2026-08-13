@@ -1,13 +1,9 @@
+<h1 align="center">mmWave Massive-MIMO 5G Simulator</h1>
+<p align="center"><em>Educational beamforming and beam-management simulator for mmWave links</em></p>
 <p align="center">
-  <h1 align="center"> mmWave Massive-MIMO 5G Simulator</h1>
-  <!-- <p align="center">
-    <em>End-to-end beamforming and beam management for 5G NR millimeter-wave networks</em> -->
-  </p>
-  <p align="center">
-    <img src="https://img.shields.io/badge/python-3.10+-blue?logo=python&logoColor=white" alt="Python 3.10+">
-    <img src="https://img.shields.io/badge/numpy-≥1.26-013243?logo=numpy&logoColor=white" alt="NumPy">
-    <img src="https://img.shields.io/badge/matplotlib-≥3.8-11557c" alt="Matplotlib">
-  </p>
+  <img src="https://img.shields.io/badge/python-3.10+-blue?logo=python&logoColor=white" alt="Python 3.10+">
+  <img src="https://img.shields.io/badge/numpy-≥1.26-013243?logo=numpy&logoColor=white" alt="NumPy">
+  <img src="https://img.shields.io/badge/matplotlib-≥3.8-11557c" alt="Matplotlib">
 </p>
 
 ---
@@ -15,6 +11,7 @@
 ## Table of Contents
 
 - [Overview](#overview)
+- [Scope & Assumptions](#scope--assumptions)
 - [Motivation & Aims](#motivation--aims)
 - [System Pipeline](#system-pipeline)
 - [Project Structure](#project-structure)
@@ -30,7 +27,7 @@
 
 A **modular, reproducible Python simulator** for a 5G-inspired millimeter-wave (mmWave) massive-MIMO link and network. It includes propagation, CP-OFDM, analog/hybrid/digital beamforming, codebook-based beam management, multi-user zero-forcing, mobility-aware handover, power allocation, and ML-assisted beam prediction. The simulator uses **NumPy + Matplotlib**, with a lightweight NumPy MLP and a scikit-learn histogram gradient-boosted-tree classifier for tabular beam prediction; no deep-learning framework is required.
 
-The project ships **12 self-contained experiments**, each generating publication-ready plots and quantitative summaries, enabling rapid prototyping and benchmarking of beamforming and beam management strategies under realistic 5G-inspired conditions.
+The project ships **12 self-contained experiments**, each generating a plot and quantitative summary. It is designed to explain fundamental trade-offs clearly, rather than reproduce every detail of a 5G NR deployment.
 
 ### Default System Configuration
 
@@ -40,9 +37,18 @@ The project ships **12 self-contained experiments**, each generating publication
 | Tx power | 30 dBm (1 W) | Noise figure | 7 dB |
 | Antenna elements | 32 (ULA) | Codebook beams | 32 (DFT) |
 | OFDM subcarriers | 64 | Cyclic prefix | 16 |
-| RF chains | 4 | Streams / user | 1 |
-| Users | 4 | Cells | 3 |
+| Pilot spacing | 4 subcarriers | RF chains | 4 |
 | Mobility sampling | 10 ms | Handover trials | 30 |
+
+## Scope & Assumptions
+
+This is a **5G-inspired educational simulator**, not a standards-compliant NR system-level simulator. Results compare methods under the same assumptions; they are not measurements or deployment predictions.
+
+- The default link is a **single-stream ULA** transmission. UPA and multi-stream extensions are deliberately outside the core configuration.
+- Default beamforming experiments use a transparent geometric channel: free-space LoS plus two fixed, weak reflectors. `channel_model.py` also contains optional cluster, Doppler and wideband helpers for study, but the default plots do not claim to be a full 3GPP channel model.
+- The OFDM experiment is a self-contained, normalized CP-OFDM link. Frame and pilot durations are used as an intuitive beam-training budget, not as an exact NR numerology.
+- The handover experiment uses a three-cell layout with simplified path loss, shadowing, blockage and A3 triggering. Its failure model is illustrative.
+- ML is intentionally lightweight and tabular (MLP and gradient boosting), with exhaustive search and location-aided Top-K as baselines.
 
 ---
 
@@ -75,16 +81,16 @@ The simulator is organized as a layered pipeline, where each layer feeds into th
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    SYSTEM CONFIGURATION                         │
-│  carrier=28 GHz, BW=100 MHz, Nt=32, Nbeams=32, K=4 users        │
+│  carrier=28 GHz, BW=100 MHz, Nt=32, Nbeams=32, one stream      │
 └──────────────────────────┬──────────────────────────────────────┘
                            │
                            ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │              CHANNEL & PROPAGATION LAYER                        │
-│  • Geometric cluster-based channel model (LoS/NLoS)             │
-│  • 3GPP-inspired UMa path loss (simplified)                     │
-│  • Per-path Doppler shifts, wideband delay taps                 │
-│  • ULA / UPA steering vectors                                   │
+│  • Default: free-space LoS + fixed weak reflectors              │
+│  • Mobility: simplified UMa reference power                     │
+│  • Optional helpers: clusters, Doppler, wideband delay taps     │
+│  • ULA DFT codebooks (UPA helpers are standalone)               │
 └──────────────────────────┬──────────────────────────────────────┘
                            │
                            ▼
@@ -149,17 +155,15 @@ The simulator is organized as a layered pipeline, where each layer feeds into th
 
 ```
 mimo-beamforming-beam-management/
-├── config.py                       # SystemConfig dataclass (all parameters)
+├── config.py                       # Active, validated simulator parameters
 ├── main.py                         # CLI entry point — runs experiments, plots, summary
-├── channel_model.py                # Geometric channel: LoS/NLoS path loss, Doppler,
-│                                   #   cluster-based generation, wideband OFDM channel,
-│                                   #   user route / mobility trace generation
-├── array_model.py                  # Antenna array: ULA & UPA steering vectors,
-│                                   #   DFT codebooks (1D & 2D), random codebooks
+├── channel_model.py                # Default geometric channel plus optional
+│                                   #   cluster, Doppler and wideband helpers
+├── array_model.py                  # ULA DFT codebooks and standalone UPA helpers
 ├── phy.py                          # OFDM transceiver: QPSK/16-QAM mod/demod,
 │                                   #   OFDM Tx/Rx, LS channel estimation, BER
-├── beamforming.py                  # Beamforming: analog (codebook), digital (MRT/ZF),
-│                                   #   hybrid (alternating minimisation), MU-MIMO ZF
+├── beamforming.py                  # Analog, digital and single-stream hybrid BF;
+│                                   #   multi-user ZF helpers
 ├── beam_management.py              # Beam management: exhaustive, hierarchical search,
 │                                   #   location-aided, MLP top-K, beam tracking
 ├── mobility.py                     # Mobility: random-walk traces, RSRP, A3 handover,
@@ -179,7 +183,7 @@ mimo-beamforming-beam-management/
 ├── ml/                             # Machine learning beam prediction
 │   ├── __init__.py
 │   ├── data_generator.py           #   Supervised beam dataset from user route
-│   └── beam_predictor.py           #   KNN baselines + regularized NumPy MLP
+│   └── beam_predictor.py           #   KNN, NumPy MLP and gradient-boosting models
 ├── experiments/                    # 12 self-contained experiments
 │   ├── __init__.py                 #   EXPERIMENTS registry + run_all()
 │   ├── exp_beam_patterns.py        #   (1) Beam patterns vs. ULA size
@@ -198,7 +202,7 @@ mimo-beamforming-beam-management/
 ├── report/                         # summary.txt + LaTeX report
 ├── results/                        # Legacy baseline results
 ├── outputs/                        # Raw experiment outputs
-├── requirements.txt                # numpy, matplotlib, scipy
+├── requirements.txt                # NumPy, Matplotlib, scikit-learn, pytest
 ```
 
 ### Module Dependency Graph
@@ -309,7 +313,7 @@ All outputs are saved automatically:
 
 ## Results & Analysis
 
-Below are the key findings from each experiment, using the default system configuration (28 GHz, 32 antennas, 32 DFT beams, 4 users).
+Below are the key findings from each experiment, using the default link configuration where applicable (28 GHz, 32 antennas and 32 DFT beams). Multi-user and mobility experiments intentionally sweep their stated scenarios.
 
 ### 1. DFT Beam Patterns vs. Array Size
 
@@ -337,7 +341,7 @@ Below are the key findings from each experiment, using the default system config
 
 **Key observations:**
 
-- SNR degrades predictably with distance, following the simplified UMa LoS/NLoS path-loss models.
+- SNR degrades predictably with distance under the default free-space geometric channel.
 - Angular coverage is near-uniform thanks to the DFT codebook spanning the full ±90° sector.
 - The rate map reveals that even moderate SNR (10–15 dB) yields 3–5 bit/s/Hz of spectral efficiency.
 
@@ -393,8 +397,8 @@ Below are the key findings from each experiment, using the default system config
 
 **Key observations:**
 
-- Too few beams (8) under-resolve the angular domain → low beamforming gain → 1.9 bit/s/Hz.
-- The **sweet spot is around 32–48 beams** (~4.7 bit/s/Hz), balancing angular resolution against pilot overhead.
+- Too few beams (8) under-resolve the angular domain, giving approximately 5.9 bit/s/Hz in the default run.
+- The **sweet spot is around 32 beams** (approximately 9.4 bit/s/Hz), balancing angular resolution against pilot overhead.
 - Beyond 48 beams, the marginal SNR gain is outweighed by the increasing pilot cost, and effective rate starts declining.
 
 ---
@@ -539,7 +543,7 @@ Below are the key findings from each experiment, using the default system config
 - The **Fusion MLP** attains 73.4% top-1 and 79.1% top-3 using noisy location, velocity and one-hot beam feedback, and is retained as the mobility-overhead baseline.
 - **Gradient Boosting** reaches 86.1% top-1 and 87.5% top-3. Its predicted Top-3 candidates yield 10.30 bit/s/Hz after pilot overhead, exceeding the 10.03 bit/s/Hz exhaustive-sweep reference on the held-out trajectories.
 - Location-only MLP reaches 18.4% top-1 and 48.2% top-3 under 8 m localisation error. This makes the benefit of temporal feedback explicit rather than hiding it through an oracle feature.
-- Future work can replace the feed-forward fusion MLP with a GRU/TCN or Transformer using RSRP/CSI histories, and can train a contextual bandit to choose K and the re-sweep interval dynamically.
+- More complex sequence models are intentionally excluded so the ML comparison remains approachable and runnable on a standard CPU.
 
 | Predictor | Top-1 Accuracy | Top-3 Accuracy | Top-3 Effective Rate |
 | :--- | :---: | :---: | :---: |
@@ -555,11 +559,11 @@ Below are the key findings from each experiment, using the default system config
 
 | Decision | Rationale |
 | --- | --- |
-| **5G-inspired, not 3GPP-compliant** | Every formula is readable and teachable — no multi-hundred-parameter standards stack. Simplified UMa path-loss (28 + 22·log₁₀(d) + 20·log₁₀(f)) captures the essential physics. |
+| **5G-inspired, not 3GPP-compliant** | Every formula is readable and teachable — no multi-hundred-parameter standards stack. Path loss and timing are simplified deliberately. |
 | **Lightweight ML stack** | The regularised softmax MLP is implemented in NumPy; histogram gradient boosting uses scikit-learn. No TensorFlow or PyTorch dependency is required. |
 | **Modular single-responsibility files** | Each `.py` file owns one layer of the pipeline. Experiments are plug-and-play via the registry in `experiments/__init__.py`. |
-| **Cluster-based geometric channel** | More physically meaningful than i.i.d. Rayleigh for mmWave. Models LoS/NLoS with per-path delay, AoD, and Doppler. |
-| **Dataclass-based configuration** | `SystemConfig` is a frozen dataclass — immutable, hashable, and all parameters have descriptive names with defaults. |
+| **Transparent default channel** | Default plots use free-space LoS plus two fixed reflectors, so the source of each beamforming effect is easy to trace. Optional cluster and Doppler helpers are clearly separated from the default suite. |
+| **Validated configuration** | `SystemConfig` is a frozen dataclass with only active core parameters and early checks for incompatible values. |
 | **Deterministic seeding** | Every experiment derives its RNG from `cfg.seed + offset`, ensuring full reproducibility. |
 | **Raw-result persistence** | Every run writes arrays to `outputs/<experiment>.npz` and non-array metadata to JSON, so plots can be independently audited or regenerated. |
 

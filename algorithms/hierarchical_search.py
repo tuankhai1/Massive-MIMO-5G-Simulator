@@ -4,30 +4,45 @@ from __future__ import annotations
 
 import numpy as np
 
+from array_model import steering_vector
+
 
 def build_hierarchical_codebook(
     num_antennas: int,
     num_levels: int = 3,
+    finest_beams: int | None = None,
 ) -> list[np.ndarray]:
     """Build a multi-resolution DFT codebook list.
 
-    Level 0 has the widest beams (fewest columns), and the last level
-    has resolution equal to the full array.
+    Level 0 has the widest beams (fewest columns).  The final level uses
+    ``finest_beams`` DFT beams, allowing the search to align with a codebook
+    that is either smaller or larger than the antenna count.
 
     Returns
     -------
     codebooks : list of ndarray, each shape (num_antennas, beams_at_level)
     """
+    if num_antennas < 2:
+        raise ValueError("num_antennas must be at least 2.")
+    if num_levels < 1:
+        raise ValueError("num_levels must be positive.")
+    final_count = num_antennas if finest_beams is None else finest_beams
+    if final_count < 2:
+        raise ValueError("finest_beams must be at least 2.")
+
     codebooks = []
     for level in range(num_levels):
-        sub_size = max(2, num_antennas // (2 ** (num_levels - 1 - level)))
-        num_beams = sub_size
+        refinement = 2 ** (num_levels - 1 - level)
+        num_beams = min(final_count, max(2, int(np.ceil(final_count / refinement))))
+        sub_size = min(
+            num_antennas,
+            max(2, int(np.ceil(num_antennas * num_beams / final_count))),
+        )
         freqs = -1.0 + 2.0 * np.arange(num_beams) / num_beams
         cols = []
         for f in freqs:
             # Build a sub-array steering vector, zero-pad to full size
-            idx = np.arange(sub_size)
-            v_sub = np.exp(1j * np.pi * idx * f) / np.sqrt(sub_size)
+            v_sub = steering_vector(sub_size, f)
             v_full = np.zeros(num_antennas, dtype=complex)
             v_full[:sub_size] = v_sub
             v_full = v_full / (np.linalg.norm(v_full) + 1e-12)

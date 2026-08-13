@@ -14,6 +14,7 @@ Three predictors with a common interface:
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -315,17 +316,27 @@ class GradientBoostedBeamPredictor:
             raise ValueError("Cannot fit GradientBoostedBeamPredictor with no samples")
 
         self.num_classes = max(self.num_classes, int(labels.max()) + 1)
-        self._model = HistGradientBoostingClassifier(
-            learning_rate=self.learning_rate,
-            max_iter=self.max_iter,
-            max_leaf_nodes=self.max_leaf_nodes,
-            min_samples_leaf=self.min_samples_leaf,
-            l2_regularization=self.l2_regularization,
-            early_stopping=True,
-            validation_fraction=0.15,
-            n_iter_no_change=18,
-            random_state=self.seed,
-        ).fit(features, labels)
+        with warnings.catch_warnings():
+            # Python 3.14 removed WMIC, which older Joblib versions probe only
+            # to estimate physical CPU cores.  The warning does not affect the
+            # fitted model or its predictions, so keep simulator output clean.
+            warnings.filterwarnings(
+                "ignore",
+                message="Could not find the number of physical cores.*",
+                category=UserWarning,
+                module=r"joblib\.externals\.loky\.backend\.context",
+            )
+            self._model = HistGradientBoostingClassifier(
+                learning_rate=self.learning_rate,
+                max_iter=self.max_iter,
+                max_leaf_nodes=self.max_leaf_nodes,
+                min_samples_leaf=self.min_samples_leaf,
+                l2_regularization=self.l2_regularization,
+                early_stopping=True,
+                validation_fraction=0.15,
+                n_iter_no_change=18,
+                random_state=self.seed,
+            ).fit(features, labels)
         return self
 
     def predict_proba(self, features: np.ndarray) -> np.ndarray:

@@ -61,7 +61,7 @@ def build_summary(results: dict, cfg: SystemConfig) -> str:
         "=" * 68,
         f"Carrier: {cfg.carrier_hz / 1e9:.1f} GHz   |   BW: {cfg.bandwidth_hz / 1e6:.0f} MHz   |   Tx: {cfg.tx_power_dbm:.0f} dBm",
         f"Antennas: {cfg.antennas}   |   Codebook beams: {cfg.codebook_beams}   |   RF chains: {cfg.num_rf_chains}",
-        f"Users: {cfg.num_users}   |   Subcarriers: {cfg.num_subcarriers}   |   Top-K: {cfg.top_k}",
+        f"Subcarriers: {cfg.num_subcarriers}   |   Top-K: {cfg.top_k}",
         "-" * 68,
     ]
 
@@ -147,6 +147,15 @@ def build_summary(results: dict, cfg: SystemConfig) -> str:
                 f"  Trajectory-disjoint split: train={int(d['train_samples'])}  "
                 f"test={int(d['test_samples'])}"
             )
+
+    summarized = {
+        "rate_vs_antennas", "codebook_size", "bf_comparison", "beam_selection",
+        "multiuser", "handover", "optimization", "ml_ablation",
+    }
+    additional = [name for name in results if name not in summarized]
+    if additional:
+        lines.append("[Additional Generated Results]")
+        lines.append(f"  Plots and raw arrays saved for: {', '.join(additional)}")
 
     lines.append("=" * 68)
     return "\n".join(lines)
