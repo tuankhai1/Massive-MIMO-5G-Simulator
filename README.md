@@ -1,5 +1,5 @@
 <h1 align="center">mmWave Massive-MIMO 5G Simulator</h1>
-<p align="center"><em>Educational beamforming and beam-management simulator for mmWave links</em></p>
+<p align="center"><em>Beamforming and beam-management simulator for mmWave links</em></p>
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.10+-blue?logo=python&logoColor=white" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/numpy-≥1.26-013243?logo=numpy&logoColor=white" alt="NumPy">
@@ -42,7 +42,7 @@ The project ships **12 self-contained experiments**, each generating a plot and 
 
 ## Scope & Assumptions
 
-This is a **5G-inspired educational simulator**, not a standards-compliant NR system-level simulator. Results compare methods under the same assumptions; they are not measurements or deployment predictions.
+This is a **5G-inspired simulator**, not a standards-compliant NR system-level simulator. Results compare methods under the same assumptions; they are not measurements or deployment predictions.
 
 - The default link is a **single-stream ULA** transmission. UPA and multi-stream extensions are deliberately outside the core configuration.
 - Default beamforming experiments use a transparent geometric channel: free-space LoS plus two fixed, weak reflectors. `channel_model.py` also contains optional cluster, Doppler and wideband helpers for study, but the default plots do not claim to be a full 3GPP channel model.
